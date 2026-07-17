@@ -592,6 +592,29 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.encoderFactory.makeCount, 2)
     }
 
+    func testEncoderCapacityIsNormalDurationStopAndPresentsAllAcceptedFrames() async throws {
+        let settings = RecordingSettings(
+            scale: .one,
+            fps: .twelve,
+            duration: .fifteen,
+            showsCursor: true
+        )
+        let harness = try Harness(settings: settings)
+        harness.encoder.maximumAcceptedFrames = 180
+        await harness.startRecording()
+
+        for index in 0 ... 180 {
+            try await harness.capture.deliver(pts: 3 + Double(index) / 12)
+        }
+        await eventually { harness.coordinator.state.isPreviewReady }
+
+        XCTAssertEqual(harness.encoder.appendTimestamps.count, 180)
+        XCTAssertEqual(harness.encoder.finishCount, 1)
+        XCTAssertEqual(harness.coordinator.stopReason, .durationLimit)
+        XCTAssertEqual(harness.preview.metadatas.last?.duration, 15)
+        XCTAssertEqual(harness.tempStore.discardCount, 0)
+    }
+
     private func assertLateCaptureCompletionDoesNotMutateNewSession(error: Error?) async {
         let harness = try! Harness(suspendCaptureStart: true, releaseCaptureStartOnStop: false)
         await harness.startRecording()
@@ -731,9 +754,14 @@ private final class FakeProcessor: RecordingFrameProcessing, @unchecked Sendable
 }
 
 private final class FakeEncoder: RecordingEncoding, @unchecked Sendable {
-    let temporaryFile: TemporaryFile; let events: EventRecorder; let finishFailure: Bool; let appendFailure: Bool; private(set) var finishCount = 0; private(set) var appendTimestamps: [TimeInterval] = []; private(set) var finishTimestamp: TimeInterval?
+    let temporaryFile: TemporaryFile; let events: EventRecorder; let finishFailure: Bool; let appendFailure: Bool; var maximumAcceptedFrames: Int?; private(set) var finishCount = 0; private(set) var appendTimestamps: [TimeInterval] = []; private(set) var finishTimestamp: TimeInterval?
     init(file: TemporaryFile, events: EventRecorder, finishFailure: Bool, appendFailure: Bool = false) { temporaryFile = file; self.events = events; self.finishFailure = finishFailure; self.appendFailure = appendFailure }
-    func append(image: CGImage, timestamp: TimeInterval) async throws { if appendFailure { throw FakeError() }; appendTimestamps.append(timestamp) }
+    func append(image: CGImage, timestamp: TimeInterval) async throws -> RecordingAppendDisposition {
+        if appendFailure { throw FakeError() }
+        if let maximumAcceptedFrames, appendTimestamps.count >= maximumAcceptedFrames { return .capacityReached }
+        appendTimestamps.append(timestamp)
+        return .accepted
+    }
     func finish(at timestamp: TimeInterval) async throws -> TemporaryFile { finishCount += 1; finishTimestamp = timestamp; events.values.append("encoder-finish"); if finishFailure { throw FakeError() }; return temporaryFile }
 }
 

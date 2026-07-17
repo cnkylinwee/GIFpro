@@ -191,6 +191,27 @@ final class GIFStreamEncoderTests: XCTestCase {
         XCTAssertEqual(afterFinish, .rejected(.finished))
     }
 
+    func testTheoreticalMaximumRejectsFrame181AndFinalizesExactly180Frames() async throws {
+        let encoder = try GIFStreamEncoder(store: store, maximumFrames: 180)
+        let images = try [Color.red, .green, .blue].map(solidImage)
+        for index in 0 ..< 180 {
+            let result = await encoder.append(
+                image: images[index % images.count],
+                timestamp: Double(index) / 12
+            )
+            XCTAssertEqual(result, .accepted)
+        }
+        let overflow = await encoder.append(image: images[0], timestamp: 15)
+        XCTAssertEqual(overflow, .rejected(.maximumFrameCountReached))
+
+        let file = try await encoder.finish(at: 15)
+        let source = try XCTUnwrap(
+            CGImageSourceCreateWithURL(try store.validatedAccessURL(for: file) as CFURL, nil)
+        )
+        XCTAssertEqual(CGImageSourceGetCount(source), 180)
+        XCTAssertEqual(try delays(in: source).reduce(0, +), 15, accuracy: 0.2)
+    }
+
     func testNoFramesInvalidStopAndSecondFinishHaveTypedErrors() async throws {
         XCTAssertThrowsError(try GIFStreamEncoder(store: store, maximumFrames: 0)) { error in
             XCTAssertEqual(error as? GIFStreamEncoder.EncodingError, .invalidMaximumFrameCount)

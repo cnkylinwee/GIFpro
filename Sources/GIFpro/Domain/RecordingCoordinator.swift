@@ -52,9 +52,14 @@ protocol RecordingFrameProcessing: Sendable {
     func process(_ frame: CapturedFrame, targetPixelSize: CGSize) throws -> CGImage
 }
 
+enum RecordingAppendDisposition: Equatable, Sendable {
+    case accepted
+    case capacityReached
+}
+
 protocol RecordingEncoding: AnyObject, Sendable {
     var temporaryFile: TemporaryFile { get }
-    func append(image: CGImage, timestamp: TimeInterval) async throws
+    func append(image: CGImage, timestamp: TimeInterval) async throws -> RecordingAppendDisposition
     func finish(at timestamp: TimeInterval) async throws -> TemporaryFile
 }
 
@@ -351,8 +356,13 @@ final class RecordingCoordinator: ObservableObject {
                         let image = try processor.process(frame, targetPixelSize: outputSize)
                         let timestamp = CMTimeGetSeconds(frame.presentationTime)
                         guard timestamp.isFinite else { throw RecordingPipelineError.invalidTimestamp }
-                        try await encoder.append(image: image, timestamp: timestamp)
-                        await self?.acceptedFrame(timestamp: timestamp, token: sessionToken, encoder: encoder)
+                        let disposition = try await encoder.append(image: image, timestamp: timestamp)
+                        switch disposition {
+                        case .accepted:
+                            await self?.acceptedFrame(timestamp: timestamp, token: sessionToken, encoder: encoder)
+                        case .capacityReached:
+                            await self?.capacityReached(token: sessionToken, encoder: encoder)
+                        }
                     } catch {
                         let shouldRequestStop = await self?.recordForcedStopFailure(
                             .captureFailed,
@@ -397,6 +407,26 @@ final class RecordingCoordinator: ObservableObject {
     ) async {
         guard acceptsFrames(token: sessionToken, encoder: sessionEncoder) else { return }
         lastPresentationTime = timestamp
+    }
+
+    private func capacityReached(
+        token sessionToken: UUID,
+        encoder sessionEncoder: any RecordingEncoding
+    ) {
+        guard token == sessionToken,
+              encoder === sessionEncoder,
+              state == .recording,
+              stopReason == nil else { return }
+        stopReason = .durationLimit
+        frozenRecordingDuration = TimeInterval(settings.duration.rawValue)
+        stopRequestScheduler.schedule { [weak self] in
+            guard let self,
+                  self.token == sessionToken,
+                  self.encoder === sessionEncoder,
+                  self.state == .recording,
+                  self.stopReason == .durationLimit else { return }
+            await self.stop(reason: .durationLimit)
+        }
     }
 
     private func startRuntimeTasks(token sessionToken: UUID) {

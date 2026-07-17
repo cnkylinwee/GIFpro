@@ -103,10 +103,12 @@ private actor GIFRecordingEncoder: RecordingEncoding {
         temporaryFile = encoder.temporaryFileForDiscardAfterFailure
     }
 
-    func append(image: CGImage, timestamp: TimeInterval) async throws {
+    func append(image: CGImage, timestamp: TimeInterval) async throws -> RecordingAppendDisposition {
         switch await encoder.append(image: image, timestamp: timestamp) {
         case .accepted:
-            return
+            return .accepted
+        case .rejected(.maximumFrameCountReached):
+            return .capacityReached
         case .rejected(let reason):
             throw GIFEncodingAdapterError.rejected(reason)
         }
