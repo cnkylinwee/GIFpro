@@ -370,11 +370,17 @@ final class RecordingCoordinatorTests: XCTestCase {
     }
 
     func testRuntimeSystemCaptureFailureFinalizesWithNotice() async {
-        let harness = try! Harness()
+        let scheduler = GateStopRequestScheduler()
+        let harness = try! Harness(stopRequestScheduler: scheduler)
         await harness.startRecording()
+        await harness.capture.waitUntilFailureHandlerInstalled()
         harness.capture.fail(.systemStopped)
 
-        await eventually { harness.coordinator.state.isPreviewReady }
+        guard scheduler.pendingCount == 1 else {
+            XCTFail("Capture failure did not schedule its stop request")
+            return
+        }
+        await scheduler.releaseNext()
 
         XCTAssertEqual(harness.capture.stopCount, 1)
         XCTAssertEqual(harness.preview.notices, [.captureStopped])
@@ -857,12 +863,18 @@ private struct FakeError: Error {}
 
 private final class FakeCapture: RecordingCaptureControlling, @unchecked Sendable {
     let events: EventRecorder; private(set) var startCount = 0; private(set) var stopCount = 0
-    let suspendStart: Bool; let suspendStop: Bool; let frameBeforeStartReturnPTS: TimeInterval?; let releaseStartOnStop: Bool; let startError: Error?; let frameDuringStopPTS: TimeInterval?; private var continuation: CheckedContinuation<Void, Error>?; private var stopContinuation: CheckedContinuation<Void, Never>?; private var frameConsumer: (@Sendable (CapturedFrame) async throws -> Void)?; private var failureHandlers: [(@Sendable (CaptureError) -> Void)] = []
+    let suspendStart: Bool; let suspendStop: Bool; let frameBeforeStartReturnPTS: TimeInterval?; let releaseStartOnStop: Bool; let startError: Error?; let frameDuringStopPTS: TimeInterval?; private var continuation: CheckedContinuation<Void, Error>?; private var stopContinuation: CheckedContinuation<Void, Never>?; private var frameConsumer: (@Sendable (CapturedFrame) async throws -> Void)?; private let failureLock = NSLock(); private var failureHandlers: [(@Sendable (CaptureError) -> Void)] = []; private var failureHandlerWaiters: [CheckedContinuation<Void, Never>] = []
     init(events: EventRecorder, suspendStart: Bool = false, suspendStop: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseStartOnStop: Bool = true, startError: Error? = nil, frameDuringStopPTS: TimeInterval? = nil) { self.events = events; self.suspendStart = suspendStart; self.suspendStop = suspendStop; self.frameBeforeStartReturnPTS = frameBeforeStartReturnPTS; self.releaseStartOnStop = releaseStartOnStop; self.startError = startError; self.frameDuringStopPTS = frameDuringStopPTS }
     func start(region: CaptureRegion, settings: RecordingSettings, onFrame: @escaping @Sendable (CapturedFrame) async throws -> Void, onFailure: @escaping @Sendable (CaptureError) -> Void) async throws {
         startCount += 1
         frameConsumer = onFrame
-        failureHandlers.append(onFailure)
+        let waiters = failureLock.withLock {
+            failureHandlers.append(onFailure)
+            let pending = failureHandlerWaiters
+            failureHandlerWaiters.removeAll()
+            return pending
+        }
+        waiters.forEach { $0.resume() }
         if let startError { throw startError }
         if let pts = frameBeforeStartReturnPTS { try await onFrame(makeFrame(pts: pts)) }
         if suspendStart { try await withCheckedThrowingContinuation { continuation = $0 } }
@@ -879,8 +891,24 @@ private final class FakeCapture: RecordingCaptureControlling, @unchecked Sendabl
     var isStopSuspended: Bool { stopContinuation != nil }
     func releaseStart(error: Error?) { if let error { continuation?.resume(throwing: error) } else { continuation?.resume() }; continuation = nil }
     func deliver(pts: TimeInterval) async throws { try await frameConsumer?(makeFrame(pts: pts)) }
-    func fail(_ error: CaptureError) { failureHandlers.last?(error) }
-    func fail(handlerAt index: Int, error: CaptureError) { failureHandlers[index](error) }
+    func waitUntilFailureHandlerInstalled() async {
+        await withCheckedContinuation { waiter in
+            let isAlreadyInstalled = failureLock.withLock {
+                if failureHandlers.isEmpty {
+                    failureHandlerWaiters.append(waiter)
+                    return false
+                }
+                return true
+            }
+            if isAlreadyInstalled { waiter.resume() }
+        }
+    }
+    func fail(_ error: CaptureError) {
+        failureLock.withLock { failureHandlers.last }?(error)
+    }
+    func fail(handlerAt index: Int, error: CaptureError) {
+        failureLock.withLock { failureHandlers[index] }(error)
+    }
 }
 
 private final class FakeProcessor: RecordingFrameProcessing, @unchecked Sendable {
@@ -959,12 +987,17 @@ private final class ManualRecordingClock: RecordingClock, @unchecked Sendable {
     func advance(by duration: TimeInterval) { let ready: [CheckedContinuation<Void, Never>] = lock.withLock { instant += duration; let values = waiters.filter { $0.0 <= instant }.map(\.1); waiters.removeAll { $0.0 <= instant }; return values }; ready.forEach { $0.resume() } }
 }
 
-@MainActor
-private final class GateStopRequestScheduler: RecordingStopRequestScheduling {
-    private var operations: [@MainActor () async -> Void] = []
-    var pendingCount: Int { operations.count }
-    func schedule(_ operation: @escaping @MainActor () async -> Void) { operations.append(operation) }
-    func releaseNext() async { await operations.removeFirst()() }
+private final class GateStopRequestScheduler: RecordingStopRequestScheduling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var operations: [@MainActor @Sendable () async -> Void] = []
+    var pendingCount: Int { lock.withLock { operations.count } }
+    func schedule(_ operation: @escaping @MainActor @Sendable () async -> Void) {
+        lock.withLock { operations.append(operation) }
+    }
+    func releaseNext() async {
+        let operation = lock.withLock { operations.removeFirst() }
+        await operation()
+    }
 }
 
 private func makeFrame(pts: TimeInterval) -> CapturedFrame {

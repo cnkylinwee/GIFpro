@@ -17,14 +17,22 @@ app_bundle="$project_root/.build/app/GIFpro.app"
 
 cd "$project_root"
 plutil -lint "$project_root/Resources/Info.plist"
+"$project_root/Scripts/validate-control-assets.sh" "$project_root/Resources"
 swift build -c "$configuration" --arch arm64
 binary_directory="$(swift build -c "$configuration" --arch arm64 --show-bin-path)"
 executable="$binary_directory/GIFpro"
 
 rm -rf "$app_contents"
-mkdir -p "$app_contents/MacOS"
+mkdir -p "$app_contents/MacOS" "$app_contents/Resources"
 cp "$executable" "$app_contents/MacOS/GIFpro"
 cp "$project_root/Resources/Info.plist" "$app_contents/Info.plist"
+for asset_name in RecordButton.png StopButton.png; do
+    cp "$project_root/Resources/$asset_name" "$app_contents/Resources/$asset_name"
+    if ! cmp "$project_root/Resources/$asset_name" "$app_contents/Resources/$asset_name"; then
+        echo "error: copied control asset differs: $asset_name" >&2
+        exit 1
+    fi
+done
 
 architectures="$(lipo -archs "$app_contents/MacOS/GIFpro")"
 if [ "$architectures" != "arm64" ]; then

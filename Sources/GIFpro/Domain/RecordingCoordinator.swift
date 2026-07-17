@@ -95,14 +95,12 @@ protocol RecordingClock: Sendable {
     func sleep(for duration: TimeInterval) async throws
 }
 
-@MainActor
-protocol RecordingStopRequestScheduling: AnyObject {
-    func schedule(_ operation: @escaping @MainActor () async -> Void)
+protocol RecordingStopRequestScheduling: AnyObject, Sendable {
+    func schedule(_ operation: @escaping @MainActor @Sendable () async -> Void)
 }
 
-@MainActor
 final class ImmediateStopRequestScheduler: RecordingStopRequestScheduling {
-    func schedule(_ operation: @escaping @MainActor () async -> Void) {
+    func schedule(_ operation: @escaping @MainActor @Sendable () async -> Void) {
         Task { @MainActor in await operation() }
     }
 }
@@ -365,6 +363,7 @@ final class RecordingCoordinator: ObservableObject {
         startRuntimeTasks(token: sessionToken)
         let outputSize = region.outputPixelSize
         let processor = processor
+        let stopRequestScheduler = stopRequestScheduler
         do {
             try await capture.start(
                 region: region,
@@ -400,7 +399,9 @@ final class RecordingCoordinator: ObservableObject {
                     }
                 },
                 onFailure: { [weak self] error in
-                    Task { @MainActor in await self?.captureFailed(error, token: sessionToken) }
+                    stopRequestScheduler.schedule { [weak self] in
+                        await self?.captureFailed(error, token: sessionToken)
+                    }
                 }
             )
         } catch {
