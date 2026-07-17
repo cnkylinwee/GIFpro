@@ -1,6 +1,8 @@
 #!/bin/sh
 
 if [ "${1:-}" = "-f" ] && [ "${2:-}" = "%z" ]; then
+    : "${GIFPRO_FAILING_STAT_MARKER:?missing stat marker path}"
+    printf '%s\n' 'stat -f %z' >"$GIFPRO_FAILING_STAT_MARKER"
     exit 71
 fi
 
