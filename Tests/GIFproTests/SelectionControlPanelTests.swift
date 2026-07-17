@@ -40,6 +40,69 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertFalse(state.showsStopPanel)
     }
 
+    func testControllerRejectsRecordingWithoutCountdownOwnerAndSelection() {
+        let controller = SelectionOverlayController()
+        let hidden = controller.auxiliarySnapshot
+
+        controller.startRecordingVisualState(onStop: {})
+        XCTAssertEqual(controller.auxiliarySnapshot, hidden)
+
+        controller.show()
+        defer { controller.dismiss() }
+        controller.startRecordingVisualState(onStop: {})
+
+        XCTAssertEqual(controller.auxiliarySnapshot, hidden)
+        XCTAssertEqual(controller.auxiliarySnapshot.phase, .hidden)
+        XCTAssertFalse(controller.auxiliarySnapshot.hasStatusPanel)
+        XCTAssertFalse(controller.auxiliarySnapshot.hasStopPanel)
+    }
+
+    func testControllerDoesNotCommitRecordingWhenPanelInstallationFails() throws {
+        var rejectsRecordingInstallation = true
+        let controller = SelectionOverlayController(
+            auxiliaryPanelInstallationGate: { phase in
+                phase != .recording || !rejectsRecordingInstallation
+            }
+        )
+        controller.show()
+        defer { controller.dismiss() }
+
+        let (displayID, view) = try XCTUnwrap(controller.selectionOverlayViews.first)
+        XCTAssertTrue(view.onDragBegan?() == true)
+        let selection = CGRect(x: 80, y: 80, width: 160, height: 120)
+        view.selectionRect = selection
+        view.onSelectionCompleted?(selection)
+
+        controller.showCountdown(value: 3, targetDisplayID: displayID)
+        let countdown = controller.auxiliarySnapshot
+        XCTAssertEqual(countdown.phase, .countdown)
+        XCTAssertTrue(countdown.hasStatusPanel)
+        XCTAssertFalse(countdown.hasStopPanel)
+
+        controller.startRecordingVisualState(onStop: {})
+
+        XCTAssertEqual(controller.auxiliarySnapshot, countdown)
+        XCTAssertEqual(controller.auxiliarySnapshot.phase, .countdown)
+        XCTAssertTrue(controller.auxiliarySnapshot.hasStatusPanel)
+        XCTAssertFalse(controller.auxiliarySnapshot.hasStopPanel)
+
+        rejectsRecordingInstallation = false
+        controller.startRecordingVisualState(onStop: {})
+        XCTAssertEqual(controller.auxiliarySnapshot.phase, .recording)
+        XCTAssertTrue(controller.auxiliarySnapshot.hasStatusPanel)
+        XCTAssertTrue(controller.auxiliarySnapshot.hasStopPanel)
+
+        controller.showStoppingVisualState()
+        XCTAssertEqual(controller.auxiliarySnapshot.phase, .stopping)
+        XCTAssertTrue(controller.auxiliarySnapshot.hasStatusPanel)
+        XCTAssertFalse(controller.auxiliarySnapshot.hasStopPanel)
+
+        controller.dismiss()
+        XCTAssertEqual(controller.auxiliarySnapshot.phase, .hidden)
+        XCTAssertFalse(controller.auxiliarySnapshot.hasStatusPanel)
+        XCTAssertFalse(controller.auxiliarySnapshot.hasStopPanel)
+    }
+
     func testControlPanelCanBecomeKeyWithoutBeingAnActivatingPanel() {
         let panel = makePanel()
 
