@@ -446,6 +446,38 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.selection.statusUpdates.count, statusCount)
     }
 
+    func testAppendFailureDuringStopDrainOverridesSuccessfulFinalization() async {
+        let harness = try! Harness(
+            appendFailure: true,
+            frameDuringStopPTS: 10
+        )
+        await harness.startRecording()
+
+        await harness.coordinator.stop(reason: .manual)
+
+        XCTAssertEqual(harness.coordinator.state, .failed(.captureFailed))
+        XCTAssertEqual(harness.capture.stopCount, 1)
+        XCTAssertEqual(harness.tempStore.discardCount, 1)
+        XCTAssertEqual(harness.encoder.finishCount, 0)
+        XCTAssertTrue(harness.preview.notices.isEmpty)
+        XCTAssertEqual(harness.coordinator.stopReason, .manual)
+    }
+
+    func testSelectingCancelsForAnyDisplayConfigurationChange() async {
+        let harness = try! Harness()
+        await harness.coordinator.toggleRecording()
+        XCTAssertEqual(harness.coordinator.state, .selecting)
+
+        harness.selection.displayChange(
+            .init(added: [7], removed: [8], updated: [9])
+        )
+        await eventually { harness.coordinator.state == .idle }
+
+        XCTAssertEqual(harness.encoderFactory.makeCount, 0)
+        XCTAssertEqual(harness.encoder.finishCount, 0)
+        XCTAssertEqual(harness.tempStore.discardCount, 0)
+    }
+
     private func assertLateCaptureCompletionDoesNotMutateNewSession(error: Error?) async {
         let harness = try! Harness(suspendCaptureStart: true, releaseCaptureStartOnStop: false)
         await harness.startRecording()
@@ -481,9 +513,9 @@ private final class Harness {
     let recorder = EventRecorder()
     let region = CaptureRegion(displayID: 42, globalRect: .init(x: 0, y: 0, width: 100, height: 80), sourceRect: .init(x: 0, y: 0, width: 100, height: 80), logicalPixelSize: .init(width: 100, height: 80), outputPixelSize: .init(width: 100, height: 80), backingScale: 1)
 
-    init(permission: Bool = true, settings: RecordingSettings = .default, capacity: TemporaryFileStore.CapacityPolicy = .canStart, capacityError: Bool = false, encoderFailure: Bool = false, finishFailure: Bool = false, suspendCaptureStart: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseCaptureStartOnStop: Bool = true, captureStartError: Error? = nil, appendFailure: Bool = false) throws {
+    init(permission: Bool = true, settings: RecordingSettings = .default, capacity: TemporaryFileStore.CapacityPolicy = .canStart, capacityError: Bool = false, encoderFailure: Bool = false, finishFailure: Bool = false, suspendCaptureStart: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseCaptureStartOnStop: Bool = true, captureStartError: Error? = nil, appendFailure: Bool = false, frameDuringStopPTS: TimeInterval? = nil) throws {
         permissions = FakePermissions(granted: permission)
-        capture = FakeCapture(events: recorder, suspendStart: suspendCaptureStart, frameBeforeStartReturnPTS: frameBeforeStartReturnPTS, releaseStartOnStop: releaseCaptureStartOnStop, startError: captureStartError)
+        capture = FakeCapture(events: recorder, suspendStart: suspendCaptureStart, frameBeforeStartReturnPTS: frameBeforeStartReturnPTS, releaseStartOnStop: releaseCaptureStartOnStop, startError: captureStartError, frameDuringStopPTS: frameDuringStopPTS)
         tempStore = try FakeTempStore(events: recorder, capacity: capacity, capacityError: capacityError)
         preferences = FakePreferences(settings: settings)
         preview = FakePreview(events: recorder)
@@ -550,8 +582,8 @@ private struct FakeError: Error {}
 
 private final class FakeCapture: RecordingCaptureControlling, @unchecked Sendable {
     let events: EventRecorder; private(set) var startCount = 0; private(set) var stopCount = 0
-    let suspendStart: Bool; let frameBeforeStartReturnPTS: TimeInterval?; let releaseStartOnStop: Bool; let startError: Error?; private var continuation: CheckedContinuation<Void, Error>?; private var frameConsumer: (@Sendable (CapturedFrame) async throws -> Void)?; private var failureHandlers: [(@Sendable (CaptureError) -> Void)] = []
-    init(events: EventRecorder, suspendStart: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseStartOnStop: Bool = true, startError: Error? = nil) { self.events = events; self.suspendStart = suspendStart; self.frameBeforeStartReturnPTS = frameBeforeStartReturnPTS; self.releaseStartOnStop = releaseStartOnStop; self.startError = startError }
+    let suspendStart: Bool; let frameBeforeStartReturnPTS: TimeInterval?; let releaseStartOnStop: Bool; let startError: Error?; let frameDuringStopPTS: TimeInterval?; private var continuation: CheckedContinuation<Void, Error>?; private var frameConsumer: (@Sendable (CapturedFrame) async throws -> Void)?; private var failureHandlers: [(@Sendable (CaptureError) -> Void)] = []
+    init(events: EventRecorder, suspendStart: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseStartOnStop: Bool = true, startError: Error? = nil, frameDuringStopPTS: TimeInterval? = nil) { self.events = events; self.suspendStart = suspendStart; self.frameBeforeStartReturnPTS = frameBeforeStartReturnPTS; self.releaseStartOnStop = releaseStartOnStop; self.startError = startError; self.frameDuringStopPTS = frameDuringStopPTS }
     func start(region: CaptureRegion, settings: RecordingSettings, onFrame: @escaping @Sendable (CapturedFrame) async throws -> Void, onFailure: @escaping @Sendable (CaptureError) -> Void) async throws {
         startCount += 1
         frameConsumer = onFrame
@@ -560,7 +592,12 @@ private final class FakeCapture: RecordingCaptureControlling, @unchecked Sendabl
         if let pts = frameBeforeStartReturnPTS { try await onFrame(makeFrame(pts: pts)) }
         if suspendStart { try await withCheckedThrowingContinuation { continuation = $0 } }
     }
-    func stop() async throws { stopCount += 1; events.values.append("capture-stop"); if releaseStartOnStop { releaseStart(error: nil) } }
+    func stop() async throws {
+        stopCount += 1
+        events.values.append("capture-stop")
+        if let frameDuringStopPTS { try? await frameConsumer?(makeFrame(pts: frameDuringStopPTS)) }
+        if releaseStartOnStop { releaseStart(error: nil) }
+    }
     func releaseStart(error: Error?) { if let error { continuation?.resume(throwing: error) } else { continuation?.resume() }; continuation = nil }
     func deliver(pts: TimeInterval) async throws { try await frameConsumer?(makeFrame(pts: pts)) }
     func fail(_ error: CaptureError) { failureHandlers.last?(error) }

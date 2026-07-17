@@ -136,6 +136,7 @@ final class RecordingCoordinator: ObservableObject {
     private var recordingStartTime: TimeInterval?
     private var lastPresentationTime: TimeInterval?
     private var completionNotice: RecordingCompletionNotice?
+    private var forcedStopFailure: RecordingFailure?
     private var terminationTask: Task<Void, Never>?
 
     init(
@@ -320,8 +321,15 @@ final class RecordingCoordinator: ObservableObject {
                         try await encoder.append(image: image, timestamp: timestamp)
                         await self?.acceptedFrame(timestamp: timestamp, token: sessionToken, encoder: encoder)
                     } catch {
-                        Task { @MainActor [weak self] in
-                            await self?.stopWithFailure(.captureFailed, token: sessionToken)
+                        let shouldRequestStop = await self?.recordForcedStopFailure(
+                            .captureFailed,
+                            token: sessionToken,
+                            encoder: encoder
+                        ) == true
+                        if shouldRequestStop {
+                            Task { @MainActor [weak self] in
+                                await self?.stop(reason: .captureFailure)
+                            }
                         }
                         throw error
                     }
@@ -403,7 +411,15 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func displayChanged(_ change: DisplayConfigurationChange, token sessionToken: UUID) {
-        guard token == sessionToken, let displayID = region?.displayID else { return }
+        guard token == sessionToken else { return }
+        let hasChange = !change.added.isEmpty
+            || !change.removed.isEmpty
+            || !change.updated.isEmpty
+        if state == .selecting, hasChange {
+            Task { @MainActor [weak self] in await self?.stop(reason: .manual) }
+            return
+        }
+        guard let displayID = region?.displayID else { return }
         if state == .countingDown,
            change.removed.contains(displayID) || change.updated.contains(displayID) {
             Task { @MainActor [weak self] in await self?.stop(reason: .displayRemoved) }
@@ -416,11 +432,25 @@ final class RecordingCoordinator: ObservableObject {
 
     private func stopWithFailure(_ failure: RecordingFailure, token sessionToken: UUID) async {
         guard token == sessionToken else { return }
+        forcedStopFailure = forcedStopFailure ?? failure
         stopReason = stopReason ?? .captureFailure
-        await performStop(token: sessionToken, forcedFailure: failure)
+        if state == .finalizing { return }
+        await stop(reason: .captureFailure)
     }
 
-    private func performStop(token sessionToken: UUID, forcedFailure: RecordingFailure? = nil) async {
+    private func recordForcedStopFailure(
+        _ failure: RecordingFailure,
+        token sessionToken: UUID,
+        encoder sessionEncoder: any RecordingEncoding
+    ) -> Bool {
+        guard token == sessionToken,
+              encoder === sessionEncoder,
+              state == .recording || state == .finalizing else { return false }
+        forcedStopFailure = forcedStopFailure ?? failure
+        return state == .recording
+    }
+
+    private func performStop(token sessionToken: UUID) async {
         guard token == sessionToken else { return }
         countdownTask?.cancel()
         switch state {
@@ -435,11 +465,11 @@ final class RecordingCoordinator: ObservableObject {
             selection.showStoppingVisual()
             do { try await capture.stop() } catch { }
             guard token == sessionToken else { return }
-            if let forcedFailure {
+            if let forcedStopFailure {
                 discardActiveFile()
                 cancelRuntimeTasks()
                 selection.dismiss()
-                transition(to: .failed(forcedFailure))
+                transition(to: .failed(forcedStopFailure))
                 return
             }
             guard let encoder else {
@@ -500,6 +530,7 @@ final class RecordingCoordinator: ObservableObject {
         encoder = nil
         activeFile = nil
         completionNotice = nil
+        forcedStopFailure = nil
         recordingStartTime = nil
         lastPresentationTime = nil
         countdownTask?.cancel()
