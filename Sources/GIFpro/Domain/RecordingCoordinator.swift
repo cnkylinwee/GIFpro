@@ -237,8 +237,14 @@ final class RecordingCoordinator: ObservableObject {
         }
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
+            if let stopTask = self.stopTask {
+                await stopTask.value
+            }
             if self.state == .recording || self.state == .countingDown || self.state == .selecting {
                 await self.stop(reason: .termination)
+            }
+            if let stopTask = self.stopTask {
+                await stopTask.value
             }
             await self.discardUnsavedOutput()
         }

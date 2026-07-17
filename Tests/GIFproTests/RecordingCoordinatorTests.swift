@@ -615,6 +615,60 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.tempStore.discardCount, 0)
     }
 
+    func testTerminationDuringSuspendedCaptureStopAwaitsFinalizationThenDiscardsPreview() async {
+        let harness = try! Harness(suspendCaptureStop: true)
+        await harness.startRecording()
+        let stopping = Task { await harness.coordinator.stop(reason: .manual) }
+        await eventually { harness.capture.isStopSuspended }
+
+        let termination = Task { await harness.coordinator.prepareForTermination() }
+        await Task.yield()
+        XCTAssertEqual(harness.coordinator.state, .finalizing)
+        XCTAssertEqual(harness.encoder.finishCount, 0)
+
+        harness.capture.releaseStop()
+        await stopping.value
+        await termination.value
+        XCTAssertEqual(harness.coordinator.state, .idle)
+        XCTAssertEqual(harness.encoder.finishCount, 1)
+        XCTAssertEqual(harness.tempStore.discardCount, 1)
+        XCTAssertNil(harness.preview.actions)
+    }
+
+    func testTerminationDuringSuspendedEncoderFinishWaitsAndLeavesNoPreviewOrTemp() async {
+        let harness = try! Harness(suspendEncoderFinish: true)
+        await harness.startRecording()
+        let stopping = Task { await harness.coordinator.stop(reason: .manual) }
+        await eventually { harness.encoder.isFinishSuspended }
+
+        let termination = Task { await harness.coordinator.prepareForTermination() }
+        await Task.yield()
+        XCTAssertEqual(harness.coordinator.state, .finalizing)
+
+        harness.encoder.releaseFinish()
+        await stopping.value
+        await termination.value
+        XCTAssertEqual(harness.coordinator.state, .idle)
+        XCTAssertEqual(harness.encoder.finishCount, 1)
+        XCTAssertEqual(harness.tempStore.discardCount, 1)
+        XCTAssertNil(harness.preview.actions)
+    }
+
+    func testTerminationDuringSuspendedFailingFinishStillRepliesWithCleanIdleState() async {
+        let harness = try! Harness(finishFailure: true, suspendEncoderFinish: true)
+        await harness.startRecording()
+        let stopping = Task { await harness.coordinator.stop(reason: .manual) }
+        await eventually { harness.encoder.isFinishSuspended }
+        let termination = Task { await harness.coordinator.prepareForTermination() }
+
+        harness.encoder.releaseFinish()
+        await stopping.value
+        await termination.value
+        XCTAssertEqual(harness.coordinator.state, .idle)
+        XCTAssertEqual(harness.tempStore.discardCount, 1)
+        XCTAssertNil(harness.preview.actions)
+    }
+
     private func assertLateCaptureCompletionDoesNotMutateNewSession(error: Error?) async {
         let harness = try! Harness(suspendCaptureStart: true, releaseCaptureStartOnStop: false)
         await harness.startRecording()
@@ -650,13 +704,13 @@ private final class Harness {
     let recorder = EventRecorder()
     let region = CaptureRegion(displayID: 42, globalRect: .init(x: 0, y: 0, width: 100, height: 80), sourceRect: .init(x: 0, y: 0, width: 100, height: 80), logicalPixelSize: .init(width: 100, height: 80), outputPixelSize: .init(width: 100, height: 80), backingScale: 1)
 
-    init(permission: Bool = true, settings: RecordingSettings = .default, capacity: TemporaryFileStore.CapacityPolicy = .canStart, capacityError: Bool = false, encoderFailure: Bool = false, finishFailure: Bool = false, suspendCaptureStart: Bool = false, suspendCaptureStop: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseCaptureStartOnStop: Bool = true, captureStartError: Error? = nil, appendFailure: Bool = false, frameDuringStopPTS: TimeInterval? = nil, previewFailure: Bool = false, stopRequestScheduler: (any RecordingStopRequestScheduling)? = nil) throws {
+    init(permission: Bool = true, settings: RecordingSettings = .default, capacity: TemporaryFileStore.CapacityPolicy = .canStart, capacityError: Bool = false, encoderFailure: Bool = false, finishFailure: Bool = false, suspendEncoderFinish: Bool = false, suspendCaptureStart: Bool = false, suspendCaptureStop: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseCaptureStartOnStop: Bool = true, captureStartError: Error? = nil, appendFailure: Bool = false, frameDuringStopPTS: TimeInterval? = nil, previewFailure: Bool = false, stopRequestScheduler: (any RecordingStopRequestScheduling)? = nil) throws {
         permissions = FakePermissions(granted: permission)
         capture = FakeCapture(events: recorder, suspendStart: suspendCaptureStart, suspendStop: suspendCaptureStop, frameBeforeStartReturnPTS: frameBeforeStartReturnPTS, releaseStartOnStop: releaseCaptureStartOnStop, startError: captureStartError, frameDuringStopPTS: frameDuringStopPTS)
         tempStore = try FakeTempStore(events: recorder, capacity: capacity, capacityError: capacityError)
         preferences = FakePreferences(settings: settings)
         preview = FakePreview(events: recorder, shouldFail: previewFailure)
-        encoder = FakeEncoder(file: try tempStore.make(), events: recorder, finishFailure: finishFailure, appendFailure: appendFailure)
+        encoder = FakeEncoder(file: try tempStore.make(), events: recorder, finishFailure: finishFailure, appendFailure: appendFailure, suspendFinish: suspendEncoderFinish)
         let secondEncoder = FakeEncoder(file: try tempStore.make(), events: recorder, finishFailure: finishFailure, appendFailure: appendFailure)
         encoderFactory = FakeEncoderFactory(encoders: [encoder, secondEncoder], shouldFail: encoderFailure)
         selection.events = recorder
@@ -754,15 +808,17 @@ private final class FakeProcessor: RecordingFrameProcessing, @unchecked Sendable
 }
 
 private final class FakeEncoder: RecordingEncoding, @unchecked Sendable {
-    let temporaryFile: TemporaryFile; let events: EventRecorder; let finishFailure: Bool; let appendFailure: Bool; var maximumAcceptedFrames: Int?; private(set) var finishCount = 0; private(set) var appendTimestamps: [TimeInterval] = []; private(set) var finishTimestamp: TimeInterval?
-    init(file: TemporaryFile, events: EventRecorder, finishFailure: Bool, appendFailure: Bool = false) { temporaryFile = file; self.events = events; self.finishFailure = finishFailure; self.appendFailure = appendFailure }
+    let temporaryFile: TemporaryFile; let events: EventRecorder; let finishFailure: Bool; let appendFailure: Bool; let suspendFinish: Bool; var maximumAcceptedFrames: Int?; private(set) var finishCount = 0; private(set) var appendTimestamps: [TimeInterval] = []; private(set) var finishTimestamp: TimeInterval?; private var finishContinuation: CheckedContinuation<Void, Never>?
+    init(file: TemporaryFile, events: EventRecorder, finishFailure: Bool, appendFailure: Bool = false, suspendFinish: Bool = false) { temporaryFile = file; self.events = events; self.finishFailure = finishFailure; self.appendFailure = appendFailure; self.suspendFinish = suspendFinish }
     func append(image: CGImage, timestamp: TimeInterval) async throws -> RecordingAppendDisposition {
         if appendFailure { throw FakeError() }
         if let maximumAcceptedFrames, appendTimestamps.count >= maximumAcceptedFrames { return .capacityReached }
         appendTimestamps.append(timestamp)
         return .accepted
     }
-    func finish(at timestamp: TimeInterval) async throws -> TemporaryFile { finishCount += 1; finishTimestamp = timestamp; events.values.append("encoder-finish"); if finishFailure { throw FakeError() }; return temporaryFile }
+    func finish(at timestamp: TimeInterval) async throws -> TemporaryFile { finishCount += 1; finishTimestamp = timestamp; events.values.append("encoder-finish"); if suspendFinish { await withCheckedContinuation { finishContinuation = $0 } }; if finishFailure { throw FakeError() }; return temporaryFile }
+    var isFinishSuspended: Bool { finishContinuation != nil }
+    func releaseFinish() { finishContinuation?.resume(); finishContinuation = nil }
 }
 
 @MainActor private final class FakeEncoderFactory: RecordingEncoderFactory {
