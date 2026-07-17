@@ -1,7 +1,10 @@
 import Darwin
 import Foundation
 
-final class TemporaryFile: CustomStringConvertible {
+// The descriptor identity and lifetime state are immutable. Borrowing and
+// duplication do not mutate Swift-managed state, so the handle can safely be
+// transferred across actor boundaries.
+final class TemporaryFile: CustomStringConvertible, @unchecked Sendable {
     let name: String
 
     var description: String {
@@ -46,7 +49,10 @@ final class TemporaryFile: CustomStringConvertible {
     }
 }
 
-final class TemporaryFileStore {
+// Store configuration is immutable after initialization. The only lazily
+// mutated state is the pinned root descriptor and identity, protected by
+// descriptorLock and never changed after publication.
+final class TemporaryFileStore: @unchecked Sendable {
     enum CapacityPolicy: Equatable {
         case canStart
         case `continue`
