@@ -1,12 +1,13 @@
-name: macOS
+name: macOS 14 Apple Silicon release gate
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
-  test:
-    runs-on: macos-14
+  macos-14-release-gate:
+    # This intentionally requires an organization-provided Apple Silicon host.
+    # GitHub's generic macos-14 label may select Intel and is not release evidence.
+    runs-on: [self-hosted, macOS, ARM64, macos-14]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -15,4 +16,7 @@ jobs:
         run: swift test --filter ImageIODestinationCompatibilityTests
 
       - name: Run test suite
-        run: swift test
+        run: swift test --parallel
+
+      - name: Verify release artifact
+        run: ./Scripts/build-app.sh release
