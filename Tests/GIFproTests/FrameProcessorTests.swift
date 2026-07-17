@@ -5,6 +5,33 @@ import XCTest
 @testable import GIFpro
 
 final class FrameProcessorTests: XCTestCase {
+    func testProcessesOneToOneBGRApixelBufferWithoutChangingPixels() throws {
+        let pixelBuffer = try makePixelBuffer(
+            width: 2,
+            height: 1,
+            pixels: [
+                255, 0, 0, 255,
+                0, 255, 255, 255,
+            ]
+        )
+
+        let image = try FrameProcessor().process(
+            pixelBuffer: pixelBuffer,
+            targetPixelSize: CGSize(width: 2, height: 1)
+        )
+
+        XCTAssertEqual(image.width, 2)
+        XCTAssertEqual(image.height, 1)
+        XCTAssertEqual(image.colorSpace?.name, CGColorSpace.sRGB)
+        let pixels = try rgbaBytes(of: image)
+        XCTAssertLessThan(Int(pixels[0]), 30)
+        XCTAssertLessThan(Int(pixels[1]), 30)
+        XCTAssertGreaterThan(Int(pixels[2]), 200)
+        XCTAssertGreaterThan(Int(pixels[4]), 200)
+        XCTAssertGreaterThan(Int(pixels[5]), 200)
+        XCTAssertLessThan(Int(pixels[6]), 30)
+    }
+
     func testProcessesBGRApixelBufferAtExactTargetSizeInSRGB() throws {
         let pixelBuffer = try makePixelBuffer(
             width: 2,

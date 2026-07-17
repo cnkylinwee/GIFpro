@@ -50,13 +50,18 @@ final class FrameProcessor {
             guard source.extent.width > 0, source.extent.height > 0 else {
                 throw ProcessingError.imageCreationFailed
             }
-            let transform = CGAffineTransform(
-                scaleX: targetPixelSize.width / source.extent.width,
-                y: targetPixelSize.height / source.extent.height
-            ).translatedBy(x: -source.extent.minX, y: -source.extent.minY)
-            let scaled = source.transformed(by: transform)
+            let renderedImage: CIImage
+            if source.extent.size == targetPixelSize, source.extent.origin == .zero {
+                renderedImage = source
+            } else {
+                let transform = CGAffineTransform(
+                    scaleX: targetPixelSize.width / source.extent.width,
+                    y: targetPixelSize.height / source.extent.height
+                ).translatedBy(x: -source.extent.minX, y: -source.extent.minY)
+                renderedImage = source.transformed(by: transform)
+            }
             let bounds = CGRect(origin: .zero, size: targetPixelSize)
-            guard let image = imageCreator(context, scaled, bounds, outputColorSpace) else {
+            guard let image = imageCreator(context, renderedImage, bounds, outputColorSpace) else {
                 throw ProcessingError.imageCreationFailed
             }
             return image

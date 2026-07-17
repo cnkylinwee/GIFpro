@@ -49,22 +49,48 @@ final class GIFStreamEncoderTests: XCTestCase {
     }
 
     func testCarriesCentisecondQuantizationAtCommonFrameRates() async throws {
-        for fps in [8.0, 12.0, 15.0] {
+        let cases: [(fps: Double, expected: [Double])] = [
+            (8, [0.13, 0.12, 0.13, 0.12]),
+            (12, [0.08, 0.09, 0.08, 0.08]),
+            (15, [0.07, 0.06, 0.07, 0.07]),
+        ]
+        for testCase in cases {
             let encoder = try GIFStreamEncoder(store: store, maximumFrames: 4)
             let colors: [Color] = [.red, .green, .blue, .red]
             for index in 0 ..< 4 {
                 let result = await encoder.append(
                     image: try solidImage(colors[index]),
-                    timestamp: Double(index) / fps
+                    timestamp: Double(index) / testCase.fps
                 )
                 XCTAssertEqual(result, .accepted)
             }
-            let file = try await encoder.finish(at: 4.0 / fps)
+            let file = try await encoder.finish(at: 4.0 / testCase.fps)
             let source = try XCTUnwrap(
                 CGImageSourceCreateWithURL(try store.validatedAccessURL(for: file) as CFURL, nil)
             )
-            XCTAssertEqual(try delays(in: source).reduce(0, +), 4.0 / fps, accuracy: 0.011)
+            let actual = try delays(in: source)
+            XCTAssertEqual(actual.count, testCase.expected.count)
+            for (actualDelay, expectedDelay) in zip(actual, testCase.expected) {
+                XCTAssertEqual(actualDelay, expectedDelay, accuracy: 0.001)
+            }
+            XCTAssertEqual(actual.reduce(0, +), 4.0 / testCase.fps, accuracy: 0.011)
         }
+    }
+
+    func testDroppedTimestampExtendsThePreviousFrameDelayAndPreservesTotalDuration() async throws {
+        let encoder = try GIFStreamEncoder(store: store, maximumFrames: 4)
+        _ = await encoder.append(image: try solidImage(.red), timestamp: 0)
+        _ = await encoder.append(image: try solidImage(.green), timestamp: 0.1)
+        // A nominal 0.2 frame was dropped before the next delivered frame.
+        _ = await encoder.append(image: try solidImage(.blue), timestamp: 0.3)
+        let file = try await encoder.finish(at: 0.5)
+        let source = try XCTUnwrap(
+            CGImageSourceCreateWithURL(try store.validatedAccessURL(for: file) as CFURL, nil)
+        )
+
+        let actual = try delays(in: source)
+        XCTAssertEqual(actual, [0.1, 0.2, 0.2])
+        XCTAssertEqual(actual.reduce(0, +), 0.5, accuracy: 0.001)
     }
 
     func testRejectsInvalidTimestampsCapacityAndAppendAfterFinish() async throws {
@@ -191,6 +217,153 @@ final class GIFStreamEncoderTests: XCTestCase {
         }
     }
 
+    func testConsumerRetriesEINTRAndCompletesPartialWritesBeforeReturning() async throws {
+        struct WriteProbe: Sendable {
+            var calls = 0
+            var successfulBytes = 0
+            var sawEINTR = false
+            var sawPartialWrite = false
+        }
+        let probe = LockedValue(WriteProbe())
+        let closeCalls = LockedValue(0)
+        let duplicateDescriptor = LockedValue<Int32>(-1)
+        let encoder = try GIFStreamEncoder(
+            store: store,
+            maximumFrames: 2,
+            didDuplicateDescriptor: { descriptor in
+                duplicateDescriptor.withValue { $0 = descriptor }
+            },
+            writeBytes: { descriptor, buffer, count in
+                let shouldInterrupt = probe.withValueReturning { value in
+                    value.calls += 1
+                    if !value.sawEINTR {
+                        value.sawEINTR = true
+                        return true
+                    }
+                    return false
+                }
+                if shouldInterrupt {
+                    errno = EINTR
+                    return -1
+                }
+                let requested = min(count, 7)
+                let written = Darwin.write(descriptor, buffer, requested)
+                probe.withValue { value in
+                    if requested < count { value.sawPartialWrite = true }
+                    if written > 0 { value.successfulBytes += written }
+                }
+                return written
+            },
+            closeDescriptor: { descriptor in
+                closeCalls.withValue { $0 += 1 }
+                return Darwin.close(descriptor)
+            }
+        )
+        _ = await encoder.append(image: try solidImage(.red), timestamp: 0)
+        _ = await encoder.append(image: try solidImage(.blue), timestamp: 0.1)
+        let file = try await encoder.finish(at: 0.2)
+        let url = try store.validatedAccessURL(for: file)
+        let data = try Data(contentsOf: url)
+
+        XCTAssertTrue(probe.value.sawEINTR)
+        XCTAssertTrue(probe.value.sawPartialWrite)
+        XCTAssertGreaterThan(probe.value.calls, 2)
+        XCTAssertEqual(probe.value.successfulBytes, data.count)
+        XCTAssertEqual(closeCalls.value, 1)
+        XCTAssertEqual(fcntl(duplicateDescriptor.value, F_GETFD), -1)
+        XCTAssertNotNil(CGImageSourceCreateWithData(data as CFData, nil))
+    }
+
+    func testWriteFailureCanBeExplicitlyDiscardedAndReleasesAllDescriptors() async throws {
+        let duplicateDescriptor = LockedValue<Int32>(-1)
+        let closeCalls = LockedValue(0)
+        var encoder: GIFStreamEncoder? = try GIFStreamEncoder(
+            store: store,
+            maximumFrames: 1,
+            didDuplicateDescriptor: { descriptor in
+                duplicateDescriptor.withValue { $0 = descriptor }
+            },
+            writeBytes: { _, _, _ in 0 },
+            closeDescriptor: { descriptor in
+                closeCalls.withValue { $0 += 1 }
+                return Darwin.close(descriptor)
+            }
+        )
+        var file: TemporaryFile? = encoder!.temporaryFileForDiscardAfterFailure
+        let ownerDescriptor = file!.withFileDescriptor { $0 }
+        _ = await encoder!.append(image: try solidImage(.red), timestamp: 0)
+        await XCTAssertThrowsErrorAsync(try await encoder!.finish(at: 0.1)) { error in
+            XCTAssertEqual(error as? GIFStreamEncoder.EncodingError, .consumerWriteFailed)
+        }
+
+        try store.discardTemporaryFile(file!)
+        try store.discardTemporaryFile(file!)
+        XCTAssertThrowsError(try store.validatedAccessURL(for: file!))
+        XCTAssertEqual(fcntl(duplicateDescriptor.value, F_GETFD), -1)
+        XCTAssertEqual(closeCalls.value, 1)
+
+        encoder = nil
+        file = nil
+        XCTAssertEqual(fcntl(ownerDescriptor, F_GETFD), -1)
+    }
+
+    func testFinalizeFailureCanBeExplicitlyDiscardedWithoutLeavingAPathEntry() async throws {
+        let closeCalls = LockedValue(0)
+        var encoder: GIFStreamEncoder? = try GIFStreamEncoder(
+            store: store,
+            maximumFrames: 1,
+            closeDescriptor: { descriptor in
+                closeCalls.withValue { $0 += 1 }
+                return Darwin.close(descriptor)
+            },
+            finalize: { _ in false }
+        )
+        var file: TemporaryFile? = encoder!.temporaryFileForDiscardAfterFailure
+        let ownerDescriptor = file!.withFileDescriptor { $0 }
+        _ = await encoder!.append(image: try solidImage(.red), timestamp: 0)
+        await XCTAssertThrowsErrorAsync(try await encoder!.finish(at: 0.1)) { error in
+            XCTAssertEqual(error as? GIFStreamEncoder.EncodingError, .finalizationFailed)
+        }
+
+        try store.discardTemporaryFile(file!)
+        try store.discardTemporaryFile(file!)
+        XCTAssertThrowsError(try store.validatedAccessURL(for: file!))
+        XCTAssertEqual(closeCalls.value, 1)
+        encoder = nil
+        file = nil
+        XCTAssertEqual(fcntl(ownerDescriptor, F_GETFD), -1)
+    }
+
+    func testEncodingValidationFailureCanBeDiscardedAndClosesOnEncoderRelease() async throws {
+        let closeCalls = LockedValue(0)
+        let duplicateDescriptor = LockedValue<Int32>(-1)
+        var encoder: GIFStreamEncoder? = try GIFStreamEncoder(
+            store: store,
+            maximumFrames: 1,
+            didDuplicateDescriptor: { descriptor in
+                duplicateDescriptor.withValue { $0 = descriptor }
+            },
+            closeDescriptor: { descriptor in
+                closeCalls.withValue { $0 += 1 }
+                return Darwin.close(descriptor)
+            }
+        )
+        var file: TemporaryFile? = encoder!.temporaryFileForDiscardAfterFailure
+        let ownerDescriptor = file!.withFileDescriptor { $0 }
+        _ = await encoder!.append(image: try solidImage(.red), timestamp: 1)
+        await XCTAssertThrowsErrorAsync(try await encoder!.finish(at: 1)) { error in
+            XCTAssertEqual(error as? GIFStreamEncoder.EncodingError, .invalidStopTimestamp)
+        }
+
+        try store.discardTemporaryFile(file!)
+        XCTAssertThrowsError(try store.validatedAccessURL(for: file!))
+        encoder = nil
+        XCTAssertEqual(closeCalls.value, 1)
+        XCTAssertEqual(fcntl(duplicateDescriptor.value, F_GETFD), -1)
+        file = nil
+        XCTAssertEqual(fcntl(ownerDescriptor, F_GETFD), -1)
+    }
+
     private enum Color { case red, green, blue }
 
     private func solidImage(_ color: Color) throws -> CGImage {
@@ -266,6 +439,12 @@ private final class LockedValue<Value>: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         body(&storage)
+    }
+
+    func withValueReturning<Result>(_ body: (inout Value) -> Result) -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&storage)
     }
 }
 

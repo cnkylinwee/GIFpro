@@ -6,15 +6,22 @@ import UniformTypeIdentifiers
 
 private final class FileDataConsumerContext: @unchecked Sendable {
     typealias WriteBytes = @Sendable (Int32, UnsafeRawPointer, Int) -> Int
+    typealias CloseDescriptor = @Sendable (Int32) -> Int32
 
     private let lock = NSLock()
     private var descriptor: Int32
     private var writeFailed = false
     private let writeBytes: WriteBytes
+    private let closeDescriptor: CloseDescriptor
 
-    init(descriptor: Int32, writeBytes: @escaping WriteBytes) {
+    init(
+        descriptor: Int32,
+        writeBytes: @escaping WriteBytes,
+        closeDescriptor: @escaping CloseDescriptor
+    ) {
         self.descriptor = descriptor
         self.writeBytes = writeBytes
+        self.closeDescriptor = closeDescriptor
     }
 
     var didFail: Bool {
@@ -49,7 +56,7 @@ private final class FileDataConsumerContext: @unchecked Sendable {
         descriptor = -1
         lock.unlock()
         if descriptorToClose >= 0 {
-            _ = close(descriptorToClose)
+            _ = closeDescriptor(descriptorToClose)
         }
     }
 }
@@ -92,6 +99,7 @@ actor GIFStreamEncoder {
     }
 
     typealias WriteBytes = @Sendable (Int32, UnsafeRawPointer, Int) -> Int
+    typealias CloseDescriptor = @Sendable (Int32) -> Int32
     typealias Finalize = @Sendable (CGImageDestination) -> Bool
 
     // CGImage is immutable. This wrapper documents that the actor is its sole
@@ -120,6 +128,7 @@ actor GIFStreamEncoder {
         writeBytes: @escaping WriteBytes = { descriptor, buffer, count in
             Darwin.write(descriptor, buffer, count)
         },
+        closeDescriptor: @escaping CloseDescriptor = { Darwin.close($0) },
         finalize: @escaping Finalize = { CGImageDestinationFinalize($0) }
     ) throws {
         guard maximumFrames > 0 else {
@@ -129,7 +138,11 @@ actor GIFStreamEncoder {
         let temporaryFile = try store.makeTemporaryFile()
         let duplicate = try temporaryFile.duplicateFileDescriptor()
         didDuplicateDescriptor(duplicate)
-        let context = FileDataConsumerContext(descriptor: duplicate, writeBytes: writeBytes)
+        let context = FileDataConsumerContext(
+            descriptor: duplicate,
+            writeBytes: writeBytes,
+            closeDescriptor: closeDescriptor
+        )
         let retainedContext = Unmanaged.passRetained(context)
         var callbacks = CGDataConsumerCallbacks(
             putBytes: dataConsumerPutBytes,
