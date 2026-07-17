@@ -46,6 +46,78 @@ final class ClosureActionTarget: NSObject {
 
 private nonisolated(unsafe) var associationKey: UInt8 = 0
 
+enum SelectionOverlayColorRole: Equatable {
+    case selectionAccent
+    case recordingRed
+    case windowBackground
+
+    func color(with appearance: NSAppearance? = nil) -> NSColor {
+        let resolve = {
+            switch self {
+            case .selectionAccent: NSColor.controlAccentColor
+            case .recordingRed: NSColor.systemRed
+            case .windowBackground: NSColor.windowBackgroundColor
+            }
+        }
+        guard let appearance else { return resolve() }
+        var color: NSColor?
+        appearance.performAsCurrentDrawingAppearance {
+            color = resolve()
+        }
+        return color ?? resolve()
+    }
+}
+
+struct SelectionOverlayStyle {
+    let borderWidth: CGFloat = 2
+    let visibleHandleSize = CGSize(width: 10, height: 10)
+    let handleHitSize = CGSize(width: 16, height: 16)
+    let handleCornerRadius: CGFloat = 2
+    let handleFillRole = SelectionOverlayColorRole.windowBackground
+
+    func borderRole(showsHandles: Bool) -> SelectionOverlayColorRole {
+        showsHandles ? .selectionAccent : .recordingRed
+    }
+
+    func visibleHandleFrame(for handle: ResizeHandle, selection: CGRect) -> CGRect {
+        frame(size: visibleHandleSize, centeredAt: center(for: handle, selection: selection))
+    }
+
+    func handleHitFrame(for handle: ResizeHandle, selection: CGRect) -> CGRect {
+        frame(size: handleHitSize, centeredAt: center(for: handle, selection: selection))
+    }
+
+    func hitHandle(at point: CGPoint, selection: CGRect) -> ResizeHandle? {
+        let hitTestOrder: [ResizeHandle] = [
+            .topLeft, .topRight, .bottomLeft, .bottomRight,
+            .top, .bottom, .left, .right,
+        ]
+        return hitTestOrder.first { handleHitFrame(for: $0, selection: selection).contains(point) }
+    }
+
+    private func center(for handle: ResizeHandle, selection: CGRect) -> CGPoint {
+        switch handle {
+        case .top: CGPoint(x: selection.midX, y: selection.maxY)
+        case .bottom: CGPoint(x: selection.midX, y: selection.minY)
+        case .left: CGPoint(x: selection.minX, y: selection.midY)
+        case .right: CGPoint(x: selection.maxX, y: selection.midY)
+        case .topLeft: CGPoint(x: selection.minX, y: selection.maxY)
+        case .topRight: CGPoint(x: selection.maxX, y: selection.maxY)
+        case .bottomLeft: CGPoint(x: selection.minX, y: selection.minY)
+        case .bottomRight: CGPoint(x: selection.maxX, y: selection.minY)
+        }
+    }
+
+    private func frame(size: CGSize, centeredAt center: CGPoint) -> CGRect {
+        CGRect(
+            x: center.x - size.width / 2,
+            y: center.y - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+}
+
 @MainActor
 final class SelectionOverlayPanel: NSPanel {
     var handlesEscape = true
@@ -93,11 +165,6 @@ final class SelectionOverlayView: NSView {
     var onDragBegan: (() -> Bool)?
     var onSelectionChanged: ((CGRect) -> Void)?
     var onSelectionCompleted: ((CGRect) -> Void)?
-    var onStop: (() -> Void)?
-
-    private(set) var statusText: String?
-    private(set) var statusIsWarning = false
-    private(set) var showsStopControl = false
 
     var selectionRect: CGRect? {
         didSet { needsDisplay = true }
@@ -114,6 +181,38 @@ final class SelectionOverlayView: NSView {
     private var resizeHandle: ResizeHandle?
     private var resizeStartRect: CGRect?
     private var resizeStartPoint: CGPoint?
+    private let style = SelectionOverlayStyle()
+    private let notificationCenter: NotificationCenter
+    private let onRedrawRequested: (() -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        notificationCenter = .default
+        onRedrawRequested = nil
+        super.init(frame: frameRect)
+        observeSystemColorChanges()
+    }
+
+    init(
+        frame frameRect: NSRect,
+        notificationCenter: NotificationCenter,
+        onRedrawRequested: (() -> Void)?
+    ) {
+        self.notificationCenter = notificationCenter
+        self.onRedrawRequested = onRedrawRequested
+        super.init(frame: frameRect)
+        observeSystemColorChanges()
+    }
+
+    required init?(coder: NSCoder) {
+        notificationCenter = .default
+        onRedrawRequested = nil
+        super.init(coder: coder)
+        observeSystemColorChanges()
+    }
+
+    deinit {
+        notificationCenter.removeObserver(self)
+    }
 
     override var acceptsFirstResponder: Bool { isInteractive }
 
@@ -132,30 +231,34 @@ final class SelectionOverlayView: NSView {
             NSGraphicsContext.restoreGraphicsState()
         }
 
-        NSColor.systemRed.setStroke()
-        let border = NSBezierPath(rect: selectionRect.insetBy(dx: 1, dy: 1))
-        border.lineWidth = 2
+        style.borderRole(showsHandles: showsHandles).color().setStroke()
+        let borderInset = style.borderWidth / 2
+        let border = NSBezierPath(rect: selectionRect.insetBy(dx: borderInset, dy: borderInset))
+        border.lineWidth = style.borderWidth
         border.stroke()
 
-        drawStatus(in: selectionRect)
-
         for handle in ResizeHandle.allCases where showsHandles {
-            NSColor.white.setFill()
-            NSColor.systemRed.setStroke()
-            let path = NSBezierPath(ovalIn: handleRect(for: handle, selection: selectionRect))
-            path.lineWidth = 2
+            style.handleFillRole.color().setFill()
+            SelectionOverlayColorRole.selectionAccent.color().setStroke()
+            let handleFrame = style.visibleHandleFrame(for: handle, selection: selectionRect)
+            let path = NSBezierPath(
+                roundedRect: handleFrame,
+                xRadius: style.handleCornerRadius,
+                yRadius: style.handleCornerRadius
+            )
+            path.lineWidth = style.borderWidth
             path.fill()
             path.stroke()
         }
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        requestRedraw()
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if showsStopControl, let selectionRect,
-           stopControlRect(in: selectionRect).contains(point) {
-            onStop?()
-            return
-        }
         guard isInteractive else { return }
         if let selectionRect, let handle = hitHandle(at: point, selection: selectionRect) {
             resizeHandle = handle
@@ -225,99 +328,25 @@ final class SelectionOverlayView: NSView {
     }
 
     private func hitHandle(at point: CGPoint, selection: CGRect) -> ResizeHandle? {
-        ResizeHandle.allCases.first { handleRect(for: $0, selection: selection).insetBy(dx: -3, dy: -3).contains(point) }
+        style.hitHandle(at: point, selection: selection)
     }
 
-    func showCountdown(_ value: Int) {
-        statusText = "\(value)"
-        statusIsWarning = false
-        showsStopControl = false
-        onStop = nil
-        needsDisplay = true
-    }
-
-    func showRecording(
-        elapsed: TimeInterval,
-        remaining: TimeInterval,
-        isWarning: Bool,
-        onStop: @escaping () -> Void
-    ) {
-        self.onStop = onStop
-        showsStopControl = true
-        updateRecordingStatus(elapsed: elapsed, remaining: remaining, isWarning: isWarning)
-    }
-
-    func updateRecordingStatus(
-        elapsed: TimeInterval,
-        remaining: TimeInterval,
-        isWarning: Bool
-    ) {
-        statusText = String(
-            format: "%02d:%02d  剩余 %02d:%02d",
-            Int(elapsed) / 60,
-            Int(elapsed) % 60,
-            Int(remaining) / 60,
-            Int(remaining) % 60
-        )
-        statusIsWarning = isWarning
-        needsDisplay = true
-    }
-
-    func showStopping() {
-        statusText = "正在完成…"
-        statusIsWarning = false
-        showsStopControl = false
-        onStop = nil
-        needsDisplay = true
-    }
-
-    private func drawStatus(in selection: CGRect) {
-        guard let statusText else { return }
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .semibold),
-            .foregroundColor: statusIsWarning ? NSColor.systemYellow : NSColor.white,
-            .backgroundColor: NSColor.black.withAlphaComponent(0.72),
-        ]
-        statusText.draw(in: statusRect(in: selection), withAttributes: attributes)
-        if showsStopControl {
-            NSColor.systemRed.setFill()
-            stopControlRect(in: selection).fill()
-            "停止".draw(
-                in: stopControlRect(in: selection).insetBy(dx: 8, dy: 4),
-                withAttributes: [
-                    .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-                    .foregroundColor: NSColor.white,
-                ]
-            )
-        }
-    }
-
-    private func statusRect(in selection: CGRect) -> CGRect {
-        CGRect(
-            x: selection.minX + 8,
-            y: selection.maxY - 34,
-            width: max(0, min(220, selection.width - 80)),
-            height: 24
+    private func observeSystemColorChanges() {
+        notificationCenter.addObserver(
+            self,
+            selector: #selector(systemColorsDidChange),
+            name: NSColor.systemColorsDidChangeNotification,
+            object: nil
         )
     }
 
-    private func stopControlRect(in selection: CGRect) -> CGRect {
-        CGRect(x: selection.maxX - 62, y: selection.maxY - 36, width: 54, height: 28)
+    @objc private func systemColorsDidChange() {
+        requestRedraw()
     }
 
-    private func handleRect(for handle: ResizeHandle, selection: CGRect) -> CGRect {
-        let center: CGPoint
-        switch handle {
-        case .top: center = CGPoint(x: selection.midX, y: selection.maxY)
-        case .bottom: center = CGPoint(x: selection.midX, y: selection.minY)
-        case .left: center = CGPoint(x: selection.minX, y: selection.midY)
-        case .right: center = CGPoint(x: selection.maxX, y: selection.midY)
-        case .topLeft: center = CGPoint(x: selection.minX, y: selection.maxY)
-        case .topRight: center = CGPoint(x: selection.maxX, y: selection.maxY)
-        case .bottomLeft: center = CGPoint(x: selection.minX, y: selection.minY)
-        case .bottomRight: center = CGPoint(x: selection.maxX, y: selection.minY)
-        }
-        return CGRect(x: center.x - 5, y: center.y - 5, width: 10, height: 10)
+    private func requestRedraw() {
+        needsDisplay = true
+        onRedrawRequested?()
     }
 }
 

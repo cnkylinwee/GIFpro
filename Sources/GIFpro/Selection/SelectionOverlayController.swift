@@ -1,6 +1,22 @@
 import AppKit
 import CoreGraphics
 
+enum RecordingOverlayStatusContent {
+    static func countdown(_ value: Int) -> String { "\(value)" }
+
+    static func recording(elapsed: TimeInterval, remaining: TimeInterval) -> String {
+        String(
+            format: "%02d:%02d  剩余 %02d:%02d",
+            Int(elapsed) / 60,
+            Int(elapsed) % 60,
+            Int(remaining) / 60,
+            Int(remaining) % 60
+        )
+    }
+
+    static let stopping = "正在完成…"
+}
+
 @MainActor
 final class SelectionOverlayController {
     var onSettingsChanged: ((RecordingSettings) -> Void)?
@@ -80,27 +96,22 @@ final class SelectionOverlayController {
         guard visualState == .selecting, ownerDisplayID == targetDisplayID else { return }
         visualState = .countingDown
         configureStatusOnlyVisualState()
-        overlays[targetDisplayID]?.view.showCountdown(value)
-        installStatusPanels(text: "\(value)", onStop: nil)
+        installStatusPanels(text: RecordingOverlayStatusContent.countdown(value), onStop: nil)
     }
 
     func updateCountdown(_ value: Int) {
-        guard visualState == .countingDown, let ownerDisplayID else { return }
-        overlays[ownerDisplayID]?.view.showCountdown(value)
-        updateStatusPanel(text: "\(value)")
+        guard visualState == .countingDown, ownerDisplayID != nil else { return }
+        updateStatusPanel(text: RecordingOverlayStatusContent.countdown(value))
     }
 
     func startRecordingVisualState(onStop: @escaping () -> Void) {
         guard visualState != .hidden else { return }
         visualState = .recording
         configureStatusOnlyVisualState()
-        overlays[ownerDisplayID ?? 0]?.view.showRecording(
-            elapsed: 0,
-            remaining: 0,
-            isWarning: false,
+        installStatusPanels(
+            text: RecordingOverlayStatusContent.recording(elapsed: 0, remaining: 0),
             onStop: onStop
         )
-        installStatusPanels(text: recordingStatus(elapsed: 0, remaining: 0), onStop: onStop)
     }
 
     func updateRecordingStatus(
@@ -108,14 +119,9 @@ final class SelectionOverlayController {
         remaining: TimeInterval,
         isWarning: Bool
     ) {
-        guard visualState == .recording, let ownerDisplayID else { return }
-        overlays[ownerDisplayID]?.view.updateRecordingStatus(
-            elapsed: elapsed,
-            remaining: remaining,
-            isWarning: isWarning
-        )
+        guard visualState == .recording, ownerDisplayID != nil else { return }
         updateStatusPanel(
-            text: recordingStatus(elapsed: elapsed, remaining: remaining),
+            text: RecordingOverlayStatusContent.recording(elapsed: elapsed, remaining: remaining),
             isWarning: isWarning
         )
     }
@@ -123,10 +129,9 @@ final class SelectionOverlayController {
     func showStoppingVisualState() {
         guard visualState == .recording else { return }
         visualState = .stopping
-        overlays[ownerDisplayID ?? 0]?.view.showStopping()
         stopPanel?.close()
         stopPanel = nil
-        updateStatusPanel(text: "正在完成…")
+        updateStatusPanel(text: RecordingOverlayStatusContent.stopping)
     }
 
     private func configureStatusOnlyVisualState() {
@@ -205,16 +210,6 @@ final class SelectionOverlayController {
         contentView.autoresizingMask = [.width, .height]
         panel.contentView = contentView
         return panel
-    }
-
-    private func recordingStatus(elapsed: TimeInterval, remaining: TimeInterval) -> String {
-        String(
-            format: "%02d:%02d  剩余 %02d:%02d",
-            Int(elapsed) / 60,
-            Int(elapsed) % 60,
-            Int(remaining) / 60,
-            Int(remaining) % 60
-        )
     }
 
     private func installOverlay(for screen: NSScreen, displayID: CGDirectDisplayID) {
