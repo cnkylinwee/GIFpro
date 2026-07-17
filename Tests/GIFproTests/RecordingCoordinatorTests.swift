@@ -545,6 +545,7 @@ final class RecordingCoordinatorTests: XCTestCase {
         )
         await harness.beginSelectionAndRecord()
         await harness.finishCountdown()
+        await eventually { harness.capture.isStartSuspended }
         await eventually { harness.clock.pendingSleepCount >= 2 }
         harness.capture.releaseStart(error: FakeError())
         await eventually { harness.coordinator.state == .failed(.captureFailed) }
@@ -763,9 +764,16 @@ private final class Harness {
     }
 }
 
-@MainActor private func eventually(_ predicate: @escaping @MainActor () -> Bool) async {
-    for _ in 0..<100 where !predicate() { await Task.yield() }
-    XCTAssertTrue(predicate())
+@MainActor private func eventually(
+    _ predicate: @escaping @MainActor () -> Bool,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    for _ in 0 ..< 1_000 {
+        if predicate() { return }
+        await Task.yield()
+    }
+    XCTFail("Timed out waiting for asynchronous test condition", file: file, line: line)
 }
 
 private final class EventRecorder: @unchecked Sendable { var values: [String] = [] }
@@ -816,6 +824,7 @@ private final class FakeCapture: RecordingCaptureControlling, @unchecked Sendabl
         if suspendStop { await withCheckedContinuation { stopContinuation = $0 } }
     }
     func releaseStop() { stopContinuation?.resume(); stopContinuation = nil }
+    var isStartSuspended: Bool { continuation != nil }
     var isStopSuspended: Bool { stopContinuation != nil }
     func releaseStart(error: Error?) { if let error { continuation?.resume(throwing: error) } else { continuation?.resume() }; continuation = nil }
     func deliver(pts: TimeInterval) async throws { try await frameConsumer?(makeFrame(pts: pts)) }
