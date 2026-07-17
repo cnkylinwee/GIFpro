@@ -162,6 +162,7 @@ Expected: all focused tests PASS.
 **Files:**
 - Create: `Sources/GIFpro/Selection/TemplateControlButton.swift`
 - Modify: `Sources/GIFpro/Selection/SelectionOverlayView.swift`
+- Modify: `Sources/GIFpro/Selection/SelectionOverlayController.swift`
 - Modify: `Tests/GIFproTests/SelectionControlPanelTests.swift`
 
 - [ ] **Step 1: Write failing shared-button state tests**
@@ -189,14 +190,14 @@ Centralize sizing, image scaling, `highlight(_:)`, `isEnabled`, and `viewDidChan
 
 - [ ] **Step 4: Replace Record with an injected template control**
 
-Inject `TemplateControlImageLoading` into `SelectionControlsView`. Create a `.record` `TemplateControlButton`, accessibility identifier `gifpro.record`, empty title, Tooltip/label “开始录制”, press action, and Return key equivalent. Keep the existing `recordPressed` callback and enabled behavior. Because the stack uses Auto Layout, rely on the button's explicit 44×44 constraints rather than setting frame only.
+Inject one `TemplateControlImageLoading` into `SelectionOverlayController` through every initializer, with the production loader as the default. Pass that shared loader into each `SelectionControlsView`. Create a `.record` `TemplateControlButton`, accessibility identifier `gifpro.record`, empty title, Tooltip/label “开始录制”, press action, and Return key equivalent. Keep the existing `recordPressed` callback and enabled behavior. Because the stack uses Auto Layout, rely on the button's explicit 44×44 constraints rather than setting frame only. Task 4 reuses this controller-owned loader for Stop rather than adding another default path.
 
 - [ ] **Step 5: Run focused tests and commit**
 
 ```bash
 swift test --filter SelectionControlPanelTests
 swift test --filter RecordingCoordinatorTests
-git add Sources/GIFpro/Selection/TemplateControlButton.swift Sources/GIFpro/Selection/SelectionOverlayView.swift Tests/GIFproTests/SelectionControlPanelTests.swift
+git add Sources/GIFpro/Selection/TemplateControlButton.swift Sources/GIFpro/Selection/SelectionOverlayView.swift Sources/GIFpro/Selection/SelectionOverlayController.swift Tests/GIFproTests/SelectionControlPanelTests.swift
 git commit -m "feat: use the template record control"
 ```
 
@@ -215,7 +216,7 @@ Expected: Record has no title, all visual states pass, Return still starts count
 
 The layout input explicitly distinguishes `.statusOnly` and `.recording`. The output contains optional frames plus one mode: `statusOnly`, `horizontal`, `vertical`, `stopOnly`, or `unavailable`.
 
-Use exact expected frames for negative-origin visible frames, center, four edges, four corners, 64×64 selections, and the thresholds 152×44, 44×80, 140×60, and 40×40. Assert below/above/clamp order. `140×60` must be stop-only. `<44×44` must emit one injected error and return unavailable. For unavailable recording layout, assert `MenuBarPresentation` still exposes “停止录制”.
+Use exact expected frames for negative-origin visible frames, center, four edges, four corners, 64×64 selections, and the thresholds 152×44, 44×80, 140×60, and 40×40. Assert below/above/clamp order. `140×60` must be stop-only. `<44×44` must emit one injected error and return unavailable. For unavailable recording layout, assert the coordinator remains `.recording` and `recordingCommandTitle == "停止录制"`; `MenuBarContentTests` verifies the menu command uses that title. Do not move command-title ownership into `MenuBarPresentation`, which only owns failure/warning issues.
 
 - [ ] **Step 2: Write failing lifecycle and generation tests**
 
