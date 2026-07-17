@@ -2,31 +2,6 @@ import AppKit
 import OSLog
 import SwiftUI
 
-@MainActor
-final class RecordingCommandRouter: ObservableObject {
-    @Published var state: RecordingState
-
-    private let logAction: (RecordingState) -> Void
-
-    init(
-        state: RecordingState = .idle,
-        logAction: @escaping (RecordingState) -> Void = { state in
-            Logger.recordingCommands.info("Temporary recording command received in state: \(String(describing: state), privacy: .public)")
-        }
-    ) {
-        self.state = state
-        self.logAction = logAction
-    }
-
-    var recordingCommandTitle: String {
-        state == .recording ? "停止录制" : "开始录制"
-    }
-
-    func performRecordingCommand() {
-        logAction(state)
-    }
-}
-
 struct MenuBarContent: View {
     @ObservedObject var coordinator: RecordingCoordinator
     let permissionService: PermissionService
@@ -53,6 +28,5 @@ struct MenuBarContent: View {
 }
 
 private extension Logger {
-    static let recordingCommands = Logger(subsystem: "com.gifpro.app", category: "RecordingCommand")
     static let permissions = Logger(subsystem: "com.gifpro.app", category: "Permissions")
 }

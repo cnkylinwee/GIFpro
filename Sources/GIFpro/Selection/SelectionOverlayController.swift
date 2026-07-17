@@ -17,7 +17,9 @@ final class SelectionOverlayController {
     private enum VisualState {
         case hidden
         case selecting
+        case countingDown
         case recording
+        case stopping
     }
 
     private let converter: DisplayCoordinateConverter
@@ -52,9 +54,6 @@ final class SelectionOverlayController {
         displayMonitor.start { [weak self] change in
             guard let self else { return }
             self.onDisplayConfigurationChanged?(change)
-            if self.visualState == .selecting {
-                self.cancelSelection()
-            }
         }
     }
 
@@ -71,9 +70,50 @@ final class SelectionOverlayController {
         visualState = .hidden
     }
 
-    func startRecordingVisualState() {
+    func showCountdown(value: Int, targetDisplayID: CGDirectDisplayID) {
+        guard visualState == .selecting, ownerDisplayID == targetDisplayID else { return }
+        visualState = .countingDown
+        configureStatusOnlyVisualState()
+        overlays[targetDisplayID]?.view.showCountdown(value)
+    }
+
+    func updateCountdown(_ value: Int) {
+        guard visualState == .countingDown, let ownerDisplayID else { return }
+        overlays[ownerDisplayID]?.view.showCountdown(value)
+    }
+
+    func startRecordingVisualState(onStop: @escaping () -> Void) {
         guard visualState != .hidden else { return }
         visualState = .recording
+        configureStatusOnlyVisualState()
+        overlays[ownerDisplayID ?? 0]?.view.showRecording(
+            elapsed: 0,
+            remaining: 0,
+            isWarning: false,
+            onStop: onStop
+        )
+    }
+
+    func updateRecordingStatus(
+        elapsed: TimeInterval,
+        remaining: TimeInterval,
+        isWarning: Bool
+    ) {
+        guard visualState == .recording, let ownerDisplayID else { return }
+        overlays[ownerDisplayID]?.view.updateRecordingStatus(
+            elapsed: elapsed,
+            remaining: remaining,
+            isWarning: isWarning
+        )
+    }
+
+    func showStoppingVisualState() {
+        guard visualState == .recording else { return }
+        visualState = .stopping
+        overlays[ownerDisplayID ?? 0]?.view.showStopping()
+    }
+
+    private func configureStatusOnlyVisualState() {
         controlPanel?.close()
         controlPanel = nil
         for (displayID, overlay) in overlays {
@@ -86,7 +126,7 @@ final class SelectionOverlayController {
             overlay.view.isInteractive = false
             overlay.panel.handlesEscape = false
             overlay.panel.onEscape = nil
-            overlay.panel.ignoresMouseEvents = true
+            overlay.panel.ignoresMouseEvents = false
             overlay.panel.resignKey()
         }
     }

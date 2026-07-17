@@ -28,6 +28,14 @@ final class AppEnvironment {
             preview: preview
         )
     }
+
+    init(
+        coordinator: RecordingCoordinator,
+        permissionService: PermissionService = PermissionService()
+    ) {
+        self.coordinator = coordinator
+        self.permissionService = permissionService
+    }
 }
 
 @MainActor
@@ -45,14 +53,15 @@ private final class ProductionCaptureController: RecordingCaptureControlling, @u
         do {
             try await engine.start(region: region, settings: settings, onFrame: onFrame)
         } catch {
-            self.engine = nil
+            if self.engine === engine { self.engine = nil }
             throw error
         }
     }
 
     func stop() async throws {
-        await engine?.stop()
-        engine = nil
+        guard let engine else { return }
+        await engine.stop()
+        if self.engine === engine { self.engine = nil }
     }
 }
 
@@ -133,6 +142,15 @@ extension SelectionOverlayController: RecordingSelectionPresenting {
         show(settings: settings)
     }
 
-    func showRecordingVisual() { startRecordingVisualState() }
-    func showStoppingVisual() { startRecordingVisualState() }
+    func showCountdownVisual(value: Int, targetDisplayID: CGDirectDisplayID) {
+        showCountdown(value: value, targetDisplayID: targetDisplayID)
+    }
+
+    func updateCountdown(value: Int) { updateCountdown(value) }
+
+    func showRecordingVisual(onStop: @escaping () -> Void) {
+        startRecordingVisualState(onStop: onStop)
+    }
+
+    func showStoppingVisual() { showStoppingVisualState() }
 }

@@ -47,6 +47,11 @@ final class SelectionOverlayView: NSView {
     var onDragBegan: (() -> Bool)?
     var onSelectionChanged: ((CGRect) -> Void)?
     var onSelectionCompleted: ((CGRect) -> Void)?
+    var onStop: (() -> Void)?
+
+    private(set) var statusText: String?
+    private(set) var statusIsWarning = false
+    private(set) var showsStopControl = false
 
     var selectionRect: CGRect? {
         didSet { needsDisplay = true }
@@ -86,6 +91,8 @@ final class SelectionOverlayView: NSView {
         border.lineWidth = 2
         border.stroke()
 
+        drawStatus(in: selectionRect)
+
         for handle in ResizeHandle.allCases where showsHandles {
             NSColor.white.setFill()
             NSColor.systemRed.setStroke()
@@ -97,8 +104,13 @@ final class SelectionOverlayView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard isInteractive else { return }
         let point = convert(event.locationInWindow, from: nil)
+        if showsStopControl, let selectionRect,
+           stopControlRect(in: selectionRect).contains(point) {
+            onStop?()
+            return
+        }
+        guard isInteractive else { return }
         if let selectionRect, let handle = hitHandle(at: point, selection: selectionRect) {
             resizeHandle = handle
             resizeStartRect = selectionRect
@@ -168,6 +180,83 @@ final class SelectionOverlayView: NSView {
 
     private func hitHandle(at point: CGPoint, selection: CGRect) -> ResizeHandle? {
         ResizeHandle.allCases.first { handleRect(for: $0, selection: selection).insetBy(dx: -3, dy: -3).contains(point) }
+    }
+
+    func showCountdown(_ value: Int) {
+        statusText = "\(value)"
+        statusIsWarning = false
+        showsStopControl = false
+        onStop = nil
+        needsDisplay = true
+    }
+
+    func showRecording(
+        elapsed: TimeInterval,
+        remaining: TimeInterval,
+        isWarning: Bool,
+        onStop: @escaping () -> Void
+    ) {
+        self.onStop = onStop
+        showsStopControl = true
+        updateRecordingStatus(elapsed: elapsed, remaining: remaining, isWarning: isWarning)
+    }
+
+    func updateRecordingStatus(
+        elapsed: TimeInterval,
+        remaining: TimeInterval,
+        isWarning: Bool
+    ) {
+        statusText = String(
+            format: "%02d:%02d  剩余 %02d:%02d",
+            Int(elapsed) / 60,
+            Int(elapsed) % 60,
+            Int(remaining) / 60,
+            Int(remaining) % 60
+        )
+        statusIsWarning = isWarning
+        needsDisplay = true
+    }
+
+    func showStopping() {
+        statusText = "正在完成…"
+        statusIsWarning = false
+        showsStopControl = false
+        onStop = nil
+        needsDisplay = true
+    }
+
+    private func drawStatus(in selection: CGRect) {
+        guard let statusText else { return }
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .semibold),
+            .foregroundColor: statusIsWarning ? NSColor.systemYellow : NSColor.white,
+            .backgroundColor: NSColor.black.withAlphaComponent(0.72),
+        ]
+        statusText.draw(in: statusRect(in: selection), withAttributes: attributes)
+        if showsStopControl {
+            NSColor.systemRed.setFill()
+            stopControlRect(in: selection).fill()
+            "停止".draw(
+                in: stopControlRect(in: selection).insetBy(dx: 8, dy: 4),
+                withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                    .foregroundColor: NSColor.white,
+                ]
+            )
+        }
+    }
+
+    private func statusRect(in selection: CGRect) -> CGRect {
+        CGRect(
+            x: selection.minX + 8,
+            y: selection.maxY - 34,
+            width: max(0, min(220, selection.width - 80)),
+            height: 24
+        )
+    }
+
+    private func stopControlRect(in selection: CGRect) -> CGRect {
+        CGRect(x: selection.maxX - 62, y: selection.maxY - 36, width: 54, height: 28)
     }
 
     private func handleRect(for handle: ResizeHandle, selection: CGRect) -> CGRect {

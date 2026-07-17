@@ -30,7 +30,10 @@ enum RecordingCompletionNotice: Equatable, Sendable {
         onDisplayChange: @escaping (DisplayConfigurationChange) -> Void
     )
     func dismiss()
-    func showRecordingVisual()
+    func showCountdownVisual(value: Int, targetDisplayID: CGDirectDisplayID)
+    func updateCountdown(value: Int)
+    func showRecordingVisual(onStop: @escaping () -> Void)
+    func updateRecordingStatus(elapsed: TimeInterval, remaining: TimeInterval, isWarning: Bool)
     func showStoppingVisual()
 }
 
@@ -48,7 +51,7 @@ protocol RecordingFrameProcessing: Sendable {
     func process(_ frame: CapturedFrame, targetPixelSize: CGSize) throws -> CGImage
 }
 
-protocol RecordingEncoding: Sendable {
+protocol RecordingEncoding: AnyObject, Sendable {
     var temporaryFile: TemporaryFile { get }
     func append(image: CGImage, timestamp: TimeInterval) async throws
     func finish(at timestamp: TimeInterval) async throws -> TemporaryFile
@@ -80,7 +83,9 @@ protocol RecordingClock: Sendable {
 }
 
 struct SystemRecordingClock: RecordingClock {
-    func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+    func now() -> TimeInterval {
+        CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
+    }
 
     func sleep(for duration: TimeInterval) async throws {
         try await Task.sleep(for: .seconds(duration))
@@ -129,7 +134,6 @@ final class RecordingCoordinator: ObservableObject {
     private var diskTask: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
     private var recordingStartTime: TimeInterval?
-    private var firstPresentationTime: TimeInterval?
     private var lastPresentationTime: TimeInterval?
     private var completionNotice: RecordingCompletionNotice?
     private var terminationTask: Task<Void, Never>?
@@ -269,12 +273,14 @@ final class RecordingCoordinator: ObservableObject {
         self.region = region
         countdownValue = 3
         transition(to: .countingDown)
+        selection.showCountdownVisual(value: 3, targetDisplayID: region.displayID)
         countdownTask = Task { @MainActor [weak self] in
             guard let self else { return }
             for next in [2, 1, 0] {
                 do { try await self.clock.sleep(for: 1) } catch { return }
                 guard self.token == sessionToken, self.state == .countingDown else { return }
                 self.countdownValue = next == 0 ? nil : next
+                if next > 0 { self.selection.updateCountdown(value: next) }
             }
             await self.startCapture(token: sessionToken)
         }
@@ -283,7 +289,19 @@ final class RecordingCoordinator: ObservableObject {
     private func startCapture(token sessionToken: UUID) async {
         guard token == sessionToken, state == .countingDown,
               let region, let encoder else { return }
-        selection.showRecordingVisual()
+        recordingStartTime = clock.now()
+        transition(to: .recording)
+        selection.showRecordingVisual { [weak self] in
+            Task { @MainActor in
+                guard let self, self.token == sessionToken else { return }
+                await self.stop(reason: .manual)
+            }
+        }
+        selection.updateRecordingStatus(
+            elapsed: 0,
+            remaining: TimeInterval(settings.duration.rawValue),
+            isWarning: false
+        )
         let outputSize = region.outputPixelSize
         let processor = processor
         do {
@@ -292,11 +310,14 @@ final class RecordingCoordinator: ObservableObject {
                 settings: settings,
                 onFrame: { [weak self] frame in
                     do {
+                        guard await self?.acceptsFrames(token: sessionToken, encoder: encoder) == true else {
+                            return
+                        }
                         let image = try processor.process(frame, targetPixelSize: outputSize)
                         let timestamp = CMTimeGetSeconds(frame.presentationTime)
                         guard timestamp.isFinite else { throw RecordingPipelineError.invalidTimestamp }
                         try await encoder.append(image: image, timestamp: timestamp)
-                        await self?.acceptedFrame(timestamp: timestamp, token: sessionToken)
+                        await self?.acceptedFrame(timestamp: timestamp, token: sessionToken, encoder: encoder)
                     } catch {
                         Task { @MainActor [weak self] in
                             await self?.stopWithFailure(.captureFailed, token: sessionToken)
@@ -309,23 +330,29 @@ final class RecordingCoordinator: ObservableObject {
                 }
             )
         } catch {
+            guard token == sessionToken, self.encoder === encoder else { return }
+            if state == .finalizing { return }
             discardActiveFile()
             transition(to: .failed(.captureFailed))
             selection.dismiss()
             return
         }
-        guard token == sessionToken, state == .countingDown else {
-            try? await capture.stop()
-            return
-        }
-        recordingStartTime = clock.now()
-        transition(to: .recording)
+        guard token == sessionToken, state == .recording, self.encoder === encoder else { return }
         startRuntimeTasks(token: sessionToken)
     }
 
-    private func acceptedFrame(timestamp: TimeInterval, token sessionToken: UUID) async {
-        guard token == sessionToken, state == .recording else { return }
-        if firstPresentationTime == nil { firstPresentationTime = timestamp }
+    private func acceptsFrames(token sessionToken: UUID, encoder sessionEncoder: any RecordingEncoding) -> Bool {
+        token == sessionToken
+            && self.encoder === sessionEncoder
+            && (state == .recording || state == .finalizing)
+    }
+
+    private func acceptedFrame(
+        timestamp: TimeInterval,
+        token sessionToken: UUID,
+        encoder sessionEncoder: any RecordingEncoding
+    ) async {
+        guard acceptsFrames(token: sessionToken, encoder: sessionEncoder) else { return }
         lastPresentationTime = timestamp
     }
 
@@ -338,6 +365,11 @@ final class RecordingCoordinator: ObservableObject {
                 guard let start = self.recordingStartTime else { return }
                 self.elapsedSeconds = max(0, self.clock.now() - start)
                 self.isInFinalTenSeconds = self.elapsedSeconds >= max(0, duration - 10)
+                self.selection.updateRecordingStatus(
+                    elapsed: self.elapsedSeconds,
+                    remaining: max(0, duration - self.elapsedSeconds),
+                    isWarning: self.isInFinalTenSeconds
+                )
                 if self.elapsedSeconds >= duration {
                     await self.stop(reason: .durationLimit)
                     return
@@ -369,8 +401,13 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func displayChanged(_ change: DisplayConfigurationChange, token sessionToken: UUID) {
-        guard token == sessionToken, let displayID = region?.displayID,
-              change.removed.contains(displayID) else { return }
+        guard token == sessionToken, let displayID = region?.displayID else { return }
+        if state == .countingDown,
+           change.removed.contains(displayID) || change.updated.contains(displayID) {
+            Task { @MainActor [weak self] in await self?.stop(reason: .displayRemoved) }
+            return
+        }
+        guard state == .recording, change.removed.contains(displayID) else { return }
         completionNotice = .displayRemoved
         Task { @MainActor [weak self] in await self?.stop(reason: .displayRemoved) }
     }
@@ -407,9 +444,7 @@ final class RecordingCoordinator: ObservableObject {
                 transition(to: .failed(.finalizationFailed))
                 return
             }
-            let elapsed = recordingStartTime.map { max(0, clock.now() - $0) } ?? 0
-            let relativeStop = firstPresentationTime.map { $0 + elapsed } ?? elapsed
-            let finishTime = max(lastPresentationTime ?? relativeStop, relativeStop)
+            let finishTime = max(clock.now(), lastPresentationTime ?? -.infinity)
             do {
                 let file = try await encoder.finish(at: finishTime)
                 cancelRuntimeTasks()
@@ -463,6 +498,8 @@ final class RecordingCoordinator: ObservableObject {
         encoder = nil
         activeFile = nil
         completionNotice = nil
+        recordingStartTime = nil
+        lastPresentationTime = nil
         countdownTask?.cancel()
         cancelRuntimeTasks()
         stopTask = nil
