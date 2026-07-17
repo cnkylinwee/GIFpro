@@ -1,6 +1,11 @@
 import Foundation
 
 final class FrameBackpressure: @unchecked Sendable {
+    struct Snapshot: Equatable, Sendable {
+        let inUse: Int
+        let drainWaiterCount: Int
+    }
+
     private let capacity: Int
     private let lock = NSLock()
     private var inUse = 0
@@ -8,6 +13,13 @@ final class FrameBackpressure: @unchecked Sendable {
 
     init(capacity: Int) {
         self.capacity = max(0, capacity)
+    }
+
+    var snapshot: Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return Snapshot(inUse: inUse, drainWaiterCount: drainWaiters.count)
     }
 
     func tryAcquire() -> Bool {

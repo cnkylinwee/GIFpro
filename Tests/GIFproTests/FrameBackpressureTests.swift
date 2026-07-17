@@ -46,18 +46,34 @@ final class FrameBackpressureTests: XCTestCase {
             await probe.complete()
         }
 
-        await Task.yield()
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        var didRegisterWaiter = false
+        for _ in 0 ..< 1_000 {
+            if backpressure.snapshot.drainWaiterCount == 1 {
+                didRegisterWaiter = true
+                break
+            }
+            await Task.yield()
+        }
+        XCTAssertTrue(didRegisterWaiter)
+
+        let waitingSnapshot = backpressure.snapshot
+        XCTAssertEqual(waitingSnapshot.inUse, 2)
+        XCTAssertEqual(waitingSnapshot.drainWaiterCount, 1)
         let completedBeforeRelease = await probe.isComplete
         XCTAssertFalse(completedBeforeRelease)
 
         backpressure.release()
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        let partlyDrainedSnapshot = backpressure.snapshot
+        XCTAssertEqual(partlyDrainedSnapshot.inUse, 1)
+        XCTAssertEqual(partlyDrainedSnapshot.drainWaiterCount, 1)
         let completedAfterOneRelease = await probe.isComplete
         XCTAssertFalse(completedAfterOneRelease)
 
         backpressure.release()
         await waiter.value
+        let drainedSnapshot = backpressure.snapshot
+        XCTAssertEqual(drainedSnapshot.inUse, 0)
+        XCTAssertEqual(drainedSnapshot.drainWaiterCount, 0)
         let completedAfterAllReleases = await probe.isComplete
         XCTAssertTrue(completedAfterAllReleases)
     }

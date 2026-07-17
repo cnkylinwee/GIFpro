@@ -42,6 +42,7 @@ struct FrameTiming: Sendable {
         }
 
         self.previousTimestamp = nil
+        fractionalCentisecondRemainder = 0
         return delay
     }
 

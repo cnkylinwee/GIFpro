@@ -44,6 +44,44 @@ final class FrameTimingTests: XCTestCase {
         XCTAssertNil(timing.finish(at: 0.50))
     }
 
+    func testFinishResetsRoundingRemainderBeforeASecondRecording() {
+        var reusedTiming = FrameTiming()
+
+        XCTAssertEqual(reusedTiming.accept(timestamp: 0), .firstFrame)
+        XCTAssertEqual(
+            reusedTiming.accept(timestamp: 1.0 / 12.0),
+            .previousFrame(delay: 0.08)
+        )
+        XCTAssertEqual(reusedTiming.finish(at: 2.0 / 12.0), 0.09)
+
+        XCTAssertEqual(reusedTiming.accept(timestamp: 10), .firstFrame)
+        guard case .previousFrame(let reusedDelay) = reusedTiming.accept(
+            timestamp: 10.086
+        ) else {
+            return XCTFail("Expected the reused timing instance to emit a delay")
+        }
+
+        var freshTiming = FrameTiming()
+        XCTAssertEqual(freshTiming.accept(timestamp: 10), .firstFrame)
+        guard case .previousFrame(let freshDelay) = freshTiming.accept(
+            timestamp: 10.086
+        ) else {
+            return XCTFail("Expected the fresh timing instance to emit a delay")
+        }
+
+        XCTAssertEqual(reusedDelay, freshDelay)
+    }
+
+    func testInvalidFinishPreservesPendingFrame() {
+        var timing = FrameTiming()
+
+        XCTAssertEqual(timing.accept(timestamp: 5), .firstFrame)
+        XCTAssertNil(timing.finish(at: .nan))
+        XCTAssertNil(timing.finish(at: 5))
+        XCTAssertNil(timing.finish(at: 4))
+        XCTAssertEqual(timing.finish(at: 5.10), 0.10)
+    }
+
     func testOneSecondRecordingStaysWithinOneCentisecondAfterRounding() throws {
         var timing = FrameTiming()
         var delays: [TimeInterval] = []
