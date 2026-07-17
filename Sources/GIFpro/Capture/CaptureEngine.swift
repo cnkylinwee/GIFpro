@@ -6,6 +6,7 @@ enum CaptureError: Error, Equatable, Sendable {
     case displayUnavailable(displayID: CGDirectDisplayID)
     case selfApplicationUnavailable(processID: pid_t)
     case alreadyRunning
+    case startCancelled
     case displayRemoved
     case shareableContentFailure(message: String)
     case streamFailure(code: Int, message: String)
@@ -203,14 +204,47 @@ actor CaptureEngine {
     typealias FrameConsumer = @Sendable (CapturedFrame) async throws -> Void
     typealias FailureHandler = @Sendable (CaptureError) -> Void
 
+    private final class StartingContext: @unchecked Sendable {
+        let id = UUID()
+        var isCancelled = false
+        var session: (any CaptureSession)?
+        var delivery: FrameDelivery?
+        var cleanupTask: Task<Void, Never>?
+        var completionWaiters: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private final class RunningContext: @unchecked Sendable {
+        let id: UUID
+        let session: any CaptureSession
+        let delivery: FrameDelivery
+
+        init(id: UUID, session: any CaptureSession, delivery: FrameDelivery) {
+            self.id = id
+            self.session = session
+            self.delivery = delivery
+        }
+    }
+
+    private final class StoppingContext: @unchecked Sendable {
+        let task: Task<Void, Never>
+
+        init(task: Task<Void, Never>) {
+            self.task = task
+        }
+    }
+
+    private enum Lifecycle {
+        case idle
+        case starting(StartingContext)
+        case running(RunningContext)
+        case stopping(StoppingContext)
+    }
+
     private let contentProvider: any ShareableContentProviding
     private let sessionBuilder: any CaptureSessionBuilding
     private let processID: pid_t
     private let onFailure: FailureHandler
-    private var session: (any CaptureSession)?
-    private var delivery: FrameDelivery?
-    private var isStarting = false
-    private var stopTask: Task<Void, Never>?
+    private var lifecycle = Lifecycle.idle
 
     init(
         contentProvider: any ShareableContentProviding = ScreenCaptureShareableContentProvider(),
@@ -229,67 +263,156 @@ actor CaptureEngine {
         settings: RecordingSettings,
         onFrame: @escaping FrameConsumer
     ) async throws {
-        guard session == nil, !isStarting, stopTask == nil else {
+        guard case .idle = lifecycle else {
             throw CaptureError.alreadyRunning
         }
-        isStarting = true
-        defer { isStarting = false }
-
-        let snapshot: ShareableContentSnapshot
-        do {
-            snapshot = try await contentProvider.latestSnapshot()
-        } catch {
-            throw CaptureError.shareableContentFailure(message: error.localizedDescription)
-        }
-        let selection = try ShareableContentSelector.select(
-            from: snapshot,
-            displayID: region.displayID,
-            processID: processID
-        )
-        let nextDelivery = FrameDelivery(capacity: 2, consumer: onFrame)
-        let nextSession = try sessionBuilder.build(
-            selection: selection,
-            configuration: CaptureConfiguration.makeStreamConfiguration(
-                region: region,
-                settings: settings
-            ),
-            delivery: nextDelivery,
-            onFailure: onFailure
-        )
-        session = nextSession
-        delivery = nextDelivery
+        let context = StartingContext()
+        lifecycle = .starting(context)
 
         do {
+            let snapshot: ShareableContentSnapshot
+            do {
+                snapshot = try await contentProvider.latestSnapshot()
+            } catch {
+                throw CaptureError.shareableContentFailure(message: error.localizedDescription)
+            }
+            try ensureStartIsActive(context)
+            let selection = try ShareableContentSelector.select(
+                from: snapshot,
+                displayID: region.displayID,
+                processID: processID
+            )
+            try ensureStartIsActive(context)
+
+            let nextDelivery = FrameDelivery(capacity: 2, consumer: onFrame)
+            context.delivery = nextDelivery
+            let token = context.id
+            let nextSession: any CaptureSession
+            do {
+                nextSession = try sessionBuilder.build(
+                    selection: selection,
+                    configuration: CaptureConfiguration.makeStreamConfiguration(
+                        region: region,
+                        settings: settings
+                    ),
+                    delivery: nextDelivery,
+                    onFailure: { [weak self] error in
+                        Task {
+                            await self?.handleUnexpectedTermination(error, token: token)
+                        }
+                    }
+                )
+            } catch {
+                throw CaptureError.wrapping(error)
+            }
+            context.session = nextSession
+            try ensureStartIsActive(context)
             try await nextSession.start()
+            try ensureStartIsActive(context)
+
+            lifecycle = .running(
+                RunningContext(id: context.id, session: nextSession, delivery: nextDelivery)
+            )
+            finishStarting(context)
         } catch {
-            session = nil
-            delivery = nil
-            nextDelivery.stopAccepting()
-            try? await nextSession.stop()
-            await nextDelivery.waitUntilDrained()
-            throw CaptureError.wrapping(error)
+            let captureError: CaptureError
+            if context.isCancelled {
+                captureError = .startCancelled
+            } else {
+                captureError = CaptureError.wrapping(error)
+            }
+            context.delivery?.stopAccepting()
+            let cleanupTask = startCleanupTask(for: context)
+            await cleanupTask.value
+            if case .starting(let current) = lifecycle, current === context {
+                lifecycle = .idle
+            }
+            finishStarting(context)
+            throw captureError
         }
     }
 
     func stop() async {
-        if let stopTask {
-            await stopTask.value
+        switch lifecycle {
+        case .idle:
+            return
+
+        case .starting(let context):
+            context.isCancelled = true
+            context.delivery?.stopAccepting()
+            _ = startCleanupTask(for: context)
+            await withCheckedContinuation { continuation in
+                context.completionWaiters.append(continuation)
+            }
+
+        case .running(let context):
+            context.delivery.stopAccepting()
+            let task = Task {
+                try? await context.session.stop()
+                await context.delivery.waitUntilDrained()
+            }
+            let stopping = StoppingContext(task: task)
+            lifecycle = .stopping(stopping)
+            await task.value
+            if case .stopping(let current) = lifecycle, current === stopping {
+                lifecycle = .idle
+            }
+
+        case .stopping(let context):
+            await context.task.value
+        }
+    }
+
+    private func ensureStartIsActive(_ context: StartingContext) throws {
+        guard !context.isCancelled,
+              case .starting(let current) = lifecycle,
+              current === context
+        else {
+            throw CaptureError.startCancelled
+        }
+    }
+
+    private func startCleanupTask(for context: StartingContext) -> Task<Void, Never> {
+        if let cleanupTask = context.cleanupTask {
+            return cleanupTask
+        }
+        let session = context.session
+        let delivery = context.delivery
+        let task = Task {
+            if let session {
+                try? await session.stop()
+            }
+            await delivery?.waitUntilDrained()
+        }
+        context.cleanupTask = task
+        return task
+    }
+
+    private func finishStarting(_ context: StartingContext) {
+        let waiters = context.completionWaiters
+        context.completionWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private func handleUnexpectedTermination(_ error: CaptureError, token: UUID) async {
+        guard case .running(let context) = lifecycle, context.id == token else {
             return
         }
-        guard let currentSession = session else {
+        context.delivery.stopAccepting()
+        let task = Task {
+            try? await context.session.stop()
+            await context.delivery.waitUntilDrained()
+        }
+        let stopping = StoppingContext(task: task)
+        lifecycle = .stopping(stopping)
+        await task.value
+        guard case .stopping(let current) = lifecycle, current === stopping else {
             return
         }
-        let currentDelivery = delivery
-        session = nil
-        delivery = nil
-        currentDelivery?.stopAccepting()
-        let operation = Task {
-            try? await currentSession.stop()
-            await currentDelivery?.waitUntilDrained()
-        }
-        stopTask = operation
-        await operation.value
-        stopTask = nil
+        lifecycle = .idle
+        onFailure(error)
     }
 }
 
