@@ -117,6 +117,7 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var countdownValue: Int?
     @Published private(set) var elapsedSeconds: TimeInterval = 0
     @Published private(set) var isInFinalTenSeconds = false
+    @Published private(set) var saveWarnings: [TemporaryFileStore.SaveWarning] = []
     private(set) var stopReason: RecordingStopReason?
 
     var hasActiveOrUnsavedWork: Bool {
@@ -154,6 +155,7 @@ final class RecordingCoordinator: ObservableObject {
     private var diskTask: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
     private var recordingStartTime: TimeInterval?
+    private var frozenRecordingDuration: TimeInterval?
     private var lastPresentationTime: TimeInterval?
     private var completionNotice: RecordingCompletionNotice?
     private var forcedStopFailure: RecordingFailure?
@@ -207,6 +209,11 @@ final class RecordingCoordinator: ObservableObject {
             return
         }
         guard state == .selecting || state == .countingDown || state == .recording else { return }
+        if state == .recording,
+           frozenRecordingDuration == nil,
+           let recordingStartTime {
+            frozenRecordingDuration = max(0, clock.now() - recordingStartTime)
+        }
         stopReason = stopReason ?? reason
         let currentToken = token
         let task = Task { @MainActor [weak self] in
@@ -236,6 +243,7 @@ final class RecordingCoordinator: ObservableObject {
 
     private func beginSelection() {
         resetSession()
+        saveWarnings = []
         transition(to: .requestingPermission)
         guard permission.requestAccessIfNeeded() else {
             transition(to: .failed(.permissionDenied))
@@ -523,10 +531,7 @@ final class RecordingCoordinator: ObservableObject {
                 self.encoder = nil
                 let identityURL = previewIdentityURL(for: file)
                 let pixelSize = region?.outputPixelSize ?? .zero
-                let actualDuration = max(
-                    elapsedSeconds,
-                    recordingStartTime.map { max(0, clock.now() - $0) } ?? 0
-                )
+                let actualDuration = frozenRecordingDuration ?? elapsedSeconds
                 let metadata = GIFPreviewMetadata(
                     pixelWidth: Int(pixelSize.width.rounded()),
                     pixelHeight: Int(pixelSize.height.rounded()),
@@ -593,6 +598,7 @@ final class RecordingCoordinator: ObservableObject {
         completionNotice = nil
         forcedStopFailure = nil
         recordingStartTime = nil
+        frozenRecordingDuration = nil
         lastPresentationTime = nil
         countdownTask?.cancel()
         cancelRuntimeTasks()
@@ -634,6 +640,12 @@ final class RecordingCoordinator: ObservableObject {
                     file: sessionFile,
                     identityURL: identityURL
                 )
+            },
+            saveWarning: { [weak self] warning in
+                guard let self,
+                      self.token == sessionToken,
+                      self.activeFile === sessionFile else { return }
+                self.saveWarnings.append(warning)
             },
             saved: { [weak self] destinationURL in
                 guard let self,
@@ -679,6 +691,7 @@ final class RecordingCoordinator: ObservableObject {
             return
         }
         resetSession()
+        saveWarnings = []
         settings = preferences.load()
         transition(to: .selecting)
         showSelection(for: token)

@@ -58,6 +58,7 @@ struct SaveAndPreviewActions {
     let saveBegan: @MainActor () -> Void
     let saveCancelled: @MainActor () -> Void
     let saveFailed: @MainActor (Error) -> Void
+    let saveWarning: @MainActor (TemporaryFileStore.SaveWarning) -> Void
     let saved: @MainActor (URL) -> Void
     let rerecord: @MainActor () -> Void
     let discarded: @MainActor () -> Void
@@ -184,6 +185,13 @@ final class SaveAndPreviewController: RecordingPreviewPresenting {
         }
         do {
             let result = try temporaryFiles.save(current.file, to: destination)
+            result.warnings.forEach(current.actions.saveWarning)
+            if result.warnings.contains(.sourceChanged) {
+                // The well-known leaf now belongs to another inode. Never unlink
+                // that replacement; releasing our handle is the only safe cleanup.
+                completeCommittedSave(current: current, destination: result.destinationURL)
+                return
+            }
             if result.cleanupPending {
                 committedDestination = result.destinationURL
                 retryCommittedCleanup(sessionID: sessionID)

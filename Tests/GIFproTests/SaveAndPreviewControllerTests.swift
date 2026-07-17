@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import XCTest
 @testable import GIFpro
@@ -76,6 +77,61 @@ final class SaveAndPreviewControllerTests: XCTestCase {
         XCTAssertEqual(harness.actionRecorder.savedURLs, [destination])
         XCTAssertEqual(harness.quickLook.urls, [destination])
         XCTAssertThrowsError(try harness.store.backingStore.validatedAccessURL(for: harness.file))
+    }
+
+    func testRealStoreSourceReplacementCompletesSaveWithoutDeletingReplacement() throws {
+        let fileManager = FileManager.default
+        let testDirectory = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let root = testDirectory.appendingPathComponent("root", isDirectory: true)
+        try fileManager.createDirectory(at: testDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: testDirectory) }
+
+        let sourceURL = PreviewLockedBox<URL?>(nil)
+        let movedOriginal = root.appendingPathComponent("moved-original.gif")
+        var operations = TemporaryFileStore.FileOperations.posix
+        let replace = operations.replaceStaging
+        operations.replaceStaging = { descriptor, stagingName, destinationName in
+            try replace(descriptor, stagingName, destinationName)
+            guard let sourceURL = sourceURL.value else { throw PreviewTestError.expected }
+            try FileManager.default.moveItem(at: sourceURL, to: movedOriginal)
+            try Data("replacement".utf8).write(to: sourceURL)
+        }
+        let store = TemporaryFileStore(rootURL: root, fileOperations: operations)
+        var file: TemporaryFile? = try store.makeTemporaryFile()
+        let weakFile = WeakTemporaryFileReference(file)
+        sourceURL.set(root.appendingPathComponent(try XCTUnwrap(file).name))
+        try XCTUnwrap(file).withFileDescriptor { descriptor in
+            _ = Data("owned".utf8).withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
+        }
+        let events = PreviewEventRecorder()
+        let preview = FakePreviewWindow(events: events)
+        let savePanel = FakeSavePanel(events: events)
+        let quickLook = FakeSystemQuickLook(events: events)
+        let actions = FakePreviewActions(events: events)
+        let controller = SaveAndPreviewController(
+            temporaryFiles: store,
+            previewWindow: preview,
+            savePanel: savePanel,
+            systemQuickLook: quickLook
+        )
+        try controller.present(
+            file: try XCTUnwrap(file),
+            metadata: .init(pixelWidth: 1, pixelHeight: 1, duration: 1, fileSize: 5),
+            notice: nil,
+            actions: actions.actions
+        )
+        let destination = testDirectory.appendingPathComponent("saved.gif")
+
+        savePanel.complete(with: destination)
+
+        XCTAssertEqual(try Data(contentsOf: destination), Data("owned".utf8))
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(sourceURL.value)), Data("replacement".utf8))
+        XCTAssertEqual(actions.warnings, [.sourceChanged])
+        XCTAssertEqual(actions.savedURLs, [destination])
+        XCTAssertEqual(quickLook.urls, [destination])
+        XCTAssertNil(controller.currentTemporaryFile)
+        file = nil
+        XCTAssertNil(weakFile.value)
     }
 
     func testSaveCancellationReturnsToPreviewReadyAndRetainsTemporaryFileAndPanel() throws {
@@ -351,6 +407,7 @@ private final class FakePreviewActions {
     var savedURLs: [URL] = []
     var rerecordCount = 0
     var discardedCount = 0
+    var warnings: [TemporaryFileStore.SaveWarning] = []
     init(events: PreviewEventRecorder) { self.events = events }
 
     var actions: SaveAndPreviewActions {
@@ -358,6 +415,7 @@ private final class FakePreviewActions {
             saveBegan: {},
             saveCancelled: { [weak self] in self?.cancelCount += 1 },
             saveFailed: { [weak self] _ in self?.failureCount += 1 },
+            saveWarning: { [weak self] warning in self?.warnings.append(warning) },
             saved: { [weak self] url in self?.events.values.append("saved"); self?.savedURLs.append(url) },
             rerecord: { [weak self] in self?.events.values.append("rerecord"); self?.rerecordCount += 1 },
             discarded: { [weak self] in self?.events.values.append("discarded"); self?.discardedCount += 1 }
@@ -366,3 +424,16 @@ private final class FakePreviewActions {
 }
 
 private enum PreviewTestError: Error { case expected }
+
+private final class PreviewLockedBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Value
+    init(_ value: Value) { storage = value }
+    var value: Value { lock.withLock { storage } }
+    func set(_ value: Value) { lock.withLock { storage = value } }
+}
+
+private final class WeakTemporaryFileReference {
+    weak var value: TemporaryFile?
+    init(_ value: TemporaryFile?) { self.value = value }
+}
