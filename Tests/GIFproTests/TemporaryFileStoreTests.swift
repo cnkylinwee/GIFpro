@@ -304,16 +304,17 @@ final class TemporaryFileStoreTests: XCTestCase {
     }
 
     func testSourceAlreadyMissingAfterCommitIsNotCleanupPending() throws {
-        var sourceURL: URL!
+        let sourceURL = LockedBox<URL?>(nil)
         var operations = TemporaryFileStore.FileOperations.posix
         let replace = operations.replaceStaging
         operations.replaceStaging = { descriptor, stagingName, destinationName in
             try replace(descriptor, stagingName, destinationName)
-            try self.fileManager.removeItem(at: sourceURL)
+            guard let sourceURL = sourceURL.value else { throw TestError.injected }
+            try FileManager.default.removeItem(at: sourceURL)
         }
         let store = makeStore(fileOperations: operations)
         let temporaryFile = try store.makeTemporaryFile()
-        sourceURL = lexicalURL(for: temporaryFile)
+        sourceURL.set(lexicalURL(for: temporaryFile))
         try write(Data("owned".utf8), to: temporaryFile)
         let destination = testDirectory.appendingPathComponent("saved.gif")
 
@@ -324,19 +325,23 @@ final class TemporaryFileStoreTests: XCTestCase {
     }
 
     func testLeafSwapAfterCommitIsNotUnlinkedAndReturnsCleanupPending() throws {
-        var sourceURL: URL!
-        var movedOriginal: URL!
+        let sourceURL = LockedBox<URL?>(nil)
+        let movedOriginal = LockedBox<URL?>(nil)
         var operations = TemporaryFileStore.FileOperations.posix
         let replace = operations.replaceStaging
         operations.replaceStaging = { descriptor, stagingName, destinationName in
             try replace(descriptor, stagingName, destinationName)
-            try self.fileManager.moveItem(at: sourceURL, to: movedOriginal)
+            guard let sourceURL = sourceURL.value,
+                  let movedOriginal = movedOriginal.value else {
+                throw TestError.injected
+            }
+            try FileManager.default.moveItem(at: sourceURL, to: movedOriginal)
             try Data("replacement".utf8).write(to: sourceURL)
         }
         let store = makeStore(fileOperations: operations)
         let temporaryFile = try store.makeTemporaryFile()
-        sourceURL = lexicalURL(for: temporaryFile)
-        movedOriginal = rootURL.appendingPathComponent("moved-original.gif")
+        sourceURL.set(lexicalURL(for: temporaryFile))
+        movedOriginal.set(rootURL.appendingPathComponent("moved-original.gif"))
         try write(Data("owned".utf8), to: temporaryFile)
         let destination = testDirectory.appendingPathComponent("saved.gif")
 
@@ -347,8 +352,8 @@ final class TemporaryFileStoreTests: XCTestCase {
             .saved(destinationURL: destination, cleanupPending: true, warnings: [.sourceChanged])
         )
         XCTAssertEqual(try Data(contentsOf: destination), Data("owned".utf8))
-        XCTAssertEqual(try Data(contentsOf: sourceURL), Data("replacement".utf8))
-        XCTAssertEqual(try Data(contentsOf: movedOriginal), Data("owned".utf8))
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(sourceURL.value)), Data("replacement".utf8))
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(movedOriginal.value)), Data("owned".utf8))
     }
 
     func testCapacityPolicyUsesInclusiveStartAndExclusiveStopBoundaries() throws {
@@ -421,5 +426,26 @@ final class TemporaryFileStoreTests: XCTestCase {
 
     private func lexicalURL(for temporaryFile: TemporaryFile) -> URL {
         rootURL.appendingPathComponent(temporaryFile.name)
+    }
+}
+
+private final class LockedBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Value
+
+    init(_ value: Value) {
+        storage = value
+    }
+
+    var value: Value {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func set(_ value: Value) {
+        lock.lock()
+        storage = value
+        lock.unlock()
     }
 }

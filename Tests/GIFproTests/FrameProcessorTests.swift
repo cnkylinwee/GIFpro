@@ -5,6 +5,53 @@ import XCTest
 @testable import GIFpro
 
 final class FrameProcessorTests: XCTestCase {
+    func testPreservesAsymmetricFourCornerOrientationAtOneAndTwoTimesScale() throws {
+        let pixelBuffer = try makePixelBuffer(
+            width: 2,
+            height: 2,
+            pixels: [
+                0, 0, 255, 255,       0, 255, 0, 255,
+                255, 0, 0, 255,       0, 255, 255, 255,
+            ]
+        )
+
+        for scale in [1, 2] {
+            let image = try FrameProcessor().process(
+                pixelBuffer: pixelBuffer,
+                targetPixelSize: CGSize(width: 2 * scale, height: 2 * scale)
+            )
+            let pixels = try rgbaBytes(of: image)
+
+            assertPixel(pixels, imageWidth: image.width, x: 0, y: 0, is: (255, 0, 0))
+            assertPixel(pixels, imageWidth: image.width, x: image.width - 1, y: 0, is: (0, 255, 0))
+            assertPixel(pixels, imageWidth: image.width, x: 0, y: image.height - 1, is: (0, 0, 255))
+            assertPixel(
+                pixels,
+                imageWidth: image.width,
+                x: image.width - 1,
+                y: image.height - 1,
+                is: (255, 255, 0)
+            )
+        }
+    }
+
+    func testSuppliesExplicitSRGBInputAndOutputColorSpaces() throws {
+        let pixelBuffer = try makePixelBuffer(width: 1, height: 1, pixels: [0, 0, 255, 255])
+        var observedInputColorSpace: CFString?
+        let processor = FrameProcessor(imageCreator: { context, image, bounds, colorSpace in
+            observedInputColorSpace = image.colorSpace?.name
+            return context.createCGImage(image, from: bounds, format: .BGRA8, colorSpace: colorSpace)
+        })
+
+        let image = try processor.process(
+            pixelBuffer: pixelBuffer,
+            targetPixelSize: CGSize(width: 1, height: 1)
+        )
+
+        XCTAssertEqual(observedInputColorSpace, CGColorSpace.sRGB)
+        XCTAssertEqual(image.colorSpace?.name, CGColorSpace.sRGB)
+    }
+
     func testProcessesOneToOneBGRApixelBufferWithoutChangingPixels() throws {
         let pixelBuffer = try makePixelBuffer(
             width: 2,
@@ -111,13 +158,23 @@ final class FrameProcessorTests: XCTestCase {
             kCVReturnSuccess
         )
         let buffer = try XCTUnwrap(pixelBuffer)
+        CVBufferSetAttachment(
+            buffer,
+            kCVImageBufferCGColorSpaceKey,
+            CGColorSpace(name: CGColorSpace.sRGB)!,
+            .shouldPropagate
+        )
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         let baseAddress = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer))
         let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
         for row in 0 ..< height {
             _ = pixels.withUnsafeBytes { bytes in
-                memcpy(baseAddress.advanced(by: row * rowBytes), bytes.baseAddress!, width * 4)
+                memcpy(
+                    baseAddress.advanced(by: row * rowBytes),
+                    bytes.baseAddress!.advanced(by: row * width * 4),
+                    width * 4
+                )
             }
         }
         return buffer
@@ -141,5 +198,20 @@ final class FrameProcessorTests: XCTestCase {
         drawingContext.interpolationQuality = .none
         drawingContext.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         return bytes
+    }
+
+    private func assertPixel(
+        _ pixels: [UInt8],
+        imageWidth: Int,
+        x: Int,
+        y: Int,
+        is expected: (red: UInt8, green: UInt8, blue: UInt8),
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let offset = (y * imageWidth + x) * 4
+        XCTAssertEqual(pixels[offset], expected.red, accuracy: 2, file: file, line: line)
+        XCTAssertEqual(pixels[offset + 1], expected.green, accuracy: 2, file: file, line: line)
+        XCTAssertEqual(pixels[offset + 2], expected.blue, accuracy: 2, file: file, line: line)
     }
 }

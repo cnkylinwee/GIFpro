@@ -13,15 +13,22 @@ private final class FileDataConsumerContext: @unchecked Sendable {
     private var writeFailed = false
     private let writeBytes: WriteBytes
     private let closeDescriptor: CloseDescriptor
+    private let didDestroy: @Sendable () -> Void
 
     init(
         descriptor: Int32,
         writeBytes: @escaping WriteBytes,
-        closeDescriptor: @escaping CloseDescriptor
+        closeDescriptor: @escaping CloseDescriptor,
+        didDestroy: @escaping @Sendable () -> Void
     ) {
         self.descriptor = descriptor
         self.writeBytes = writeBytes
         self.closeDescriptor = closeDescriptor
+        self.didDestroy = didDestroy
+    }
+
+    deinit {
+        didDestroy()
     }
 
     var didFail: Bool {
@@ -90,6 +97,8 @@ actor GIFStreamEncoder {
 
     enum EncodingError: Error, Equatable {
         case invalidMaximumFrameCount
+        case duplicateDescriptorFailed
+        case consumerCreationFailed
         case destinationCreationFailed
         case noFrames
         case invalidStopTimestamp
@@ -101,6 +110,12 @@ actor GIFStreamEncoder {
     typealias WriteBytes = @Sendable (Int32, UnsafeRawPointer, Int) -> Int
     typealias CloseDescriptor = @Sendable (Int32) -> Int32
     typealias Finalize = @Sendable (CGImageDestination) -> Bool
+    typealias DuplicateDescriptor = @Sendable (TemporaryFile) throws -> Int32
+    typealias ConsumerFactory = @Sendable (
+        UnsafeMutableRawPointer,
+        UnsafePointer<CGDataConsumerCallbacks>
+    ) -> CGDataConsumer?
+    typealias DestinationFactory = @Sendable (CGDataConsumer, Int) -> CGImageDestination?
 
     // CGImage is immutable. This wrapper documents that the actor is its sole
     // owner after append enters actor isolation.
@@ -124,11 +139,26 @@ actor GIFStreamEncoder {
     init(
         store: TemporaryFileStore,
         maximumFrames: Int,
+        duplicateDescriptor: @escaping DuplicateDescriptor = {
+            try $0.duplicateFileDescriptor()
+        },
         didDuplicateDescriptor: @Sendable (Int32) -> Void = { _ in },
         writeBytes: @escaping WriteBytes = { descriptor, buffer, count in
             Darwin.write(descriptor, buffer, count)
         },
         closeDescriptor: @escaping CloseDescriptor = { Darwin.close($0) },
+        consumerFactory: @escaping ConsumerFactory = { info, callbacks in
+            CGDataConsumer(info: info, cbks: callbacks)
+        },
+        destinationFactory: @escaping DestinationFactory = { consumer, maximumFrames in
+            CGImageDestinationCreateWithDataConsumer(
+                consumer,
+                UTType.gif.identifier as CFString,
+                maximumFrames,
+                nil
+            )
+        },
+        didDestroyConsumerContext: @escaping @Sendable () -> Void = {},
         finalize: @escaping Finalize = { CGImageDestinationFinalize($0) }
     ) throws {
         guard maximumFrames > 0 else {
@@ -136,33 +166,40 @@ actor GIFStreamEncoder {
         }
 
         let temporaryFile = try store.makeTemporaryFile()
-        let duplicate = try temporaryFile.duplicateFileDescriptor()
+        var initializationSucceeded = false
+        defer {
+            if !initializationSucceeded {
+                try? store.discardTemporaryFile(temporaryFile)
+            }
+        }
+
+        let duplicate: Int32
+        do {
+            duplicate = try duplicateDescriptor(temporaryFile)
+        } catch {
+            throw EncodingError.duplicateDescriptorFailed
+        }
         didDuplicateDescriptor(duplicate)
         let context = FileDataConsumerContext(
             descriptor: duplicate,
             writeBytes: writeBytes,
-            closeDescriptor: closeDescriptor
+            closeDescriptor: closeDescriptor,
+            didDestroy: didDestroyConsumerContext
         )
         let retainedContext = Unmanaged.passRetained(context)
         var callbacks = CGDataConsumerCallbacks(
             putBytes: dataConsumerPutBytes,
             releaseConsumer: dataConsumerRelease
         )
-        guard let consumer = CGDataConsumer(
-            info: retainedContext.toOpaque(),
-            cbks: &callbacks
-        ) else {
+        let consumer = withUnsafePointer(to: &callbacks) { callbacks in
+            consumerFactory(retainedContext.toOpaque(), callbacks)
+        }
+        guard let consumer else {
             retainedContext.release()
             context.closeOnce()
-            throw EncodingError.destinationCreationFailed
+            throw EncodingError.consumerCreationFailed
         }
-        guard let destination = CGImageDestinationCreateWithDataConsumer(
-            consumer,
-            UTType.gif.identifier as CFString,
-            maximumFrames,
-            nil
-        ) else {
-            context.closeOnce()
+        guard let destination = destinationFactory(consumer, maximumFrames) else {
             throw EncodingError.destinationCreationFailed
         }
 
@@ -181,6 +218,7 @@ actor GIFStreamEncoder {
         consumerContext = context
         self.consumer = consumer
         self.destination = destination
+        initializationSucceeded = true
     }
 
     deinit {

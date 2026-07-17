@@ -49,9 +49,9 @@ final class TemporaryFile: CustomStringConvertible, @unchecked Sendable {
     }
 }
 
-// Store configuration is immutable after initialization. The only lazily
-// mutated state is the pinned root descriptor and identity, protected by
-// descriptorLock and never changed after publication.
+// Store configuration is immutable after initialization. FileManager access
+// and the only lazily mutated state (the pinned root descriptor and identity)
+// are confined to descriptorLock and never changed after publication.
 final class TemporaryFileStore: @unchecked Sendable {
     enum CapacityPolicy: Equatable {
         case canStart
@@ -91,16 +91,21 @@ final class TemporaryFileStore: @unchecked Sendable {
         case systemCall(String, Int32)
     }
 
-    struct FileOperations {
-        var copyBytes: (Int32, Int32) throws -> Void
-        var syncStaging: (Int32) throws -> Void
-        var replaceStaging: (Int32, String, String) throws -> Void
-        var syncDestinationDirectory: (Int32) throws -> Void
-        var unlinkSource: (Int32, String) throws -> Void
+    struct FileOperations: Sendable {
+        var copyBytes: @Sendable (Int32, Int32) throws -> Void
+        var syncStaging: @Sendable (Int32) throws -> Void
+        var replaceStaging: @Sendable (Int32, String, String) throws -> Void
+        var syncDestinationDirectory: @Sendable (Int32) throws -> Void
+        var unlinkSource: @Sendable (Int32, String) throws -> Void
 
         static var posix: FileOperations {
             FileOperations(
-                copyBytes: copyFileBytes,
+                copyBytes: { sourceDescriptor, destinationDescriptor in
+                    try copyFileBytes(
+                        sourceDescriptor: sourceDescriptor,
+                        destinationDescriptor: destinationDescriptor
+                    )
+                },
                 syncStaging: { descriptor in
                     guard fsync(descriptor) == 0 else {
                         throw StoreError.systemCall("fsync staging", errno)
@@ -149,7 +154,7 @@ final class TemporaryFileStore: @unchecked Sendable {
 
     private let fileManager: FileManager
     private let rootURL: URL
-    private let availableCapacity: () throws -> Int64
+    private let availableCapacity: @Sendable () throws -> Int64
     private let fileOperations: FileOperations
     private let ownerID = UUID()
     private let descriptorLock = NSLock()
@@ -160,7 +165,7 @@ final class TemporaryFileStore: @unchecked Sendable {
     init(
         fileManager: FileManager = .default,
         rootURL: URL? = nil,
-        availableCapacity: (() throws -> Int64)? = nil,
+        availableCapacity: (@Sendable () throws -> Int64)? = nil,
         fileOperations: FileOperations = .posix
     ) {
         self.fileManager = fileManager
@@ -170,7 +175,7 @@ final class TemporaryFileStore: @unchecked Sendable {
         self.fileOperations = fileOperations
         self.availableCapacity = availableCapacity ?? {
             var capacityURL = configuredRoot.standardizedFileURL
-            while !fileManager.fileExists(atPath: capacityURL.path) {
+            while capacityURL.path.withCString({ access($0, F_OK) }) != 0 {
                 let parentURL = capacityURL.deletingLastPathComponent()
                 guard parentURL != capacityURL else {
                     throw StoreError.capacityUnavailable

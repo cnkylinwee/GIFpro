@@ -6,6 +6,7 @@ import XCTest
 @testable import GIFpro
 
 final class GIFStreamEncoderTests: XCTestCase {
+    private enum InjectedError: Error { case failure }
     private var directory: URL!
     private var store: TemporaryFileStore!
 
@@ -46,6 +47,86 @@ final class GIFStreamEncoderTests: XCTestCase {
         let gif = try XCTUnwrap(container[kCGImagePropertyGIFDictionary] as? [CFString: Any])
         XCTAssertEqual((gif[kCGImagePropertyGIFLoopCount] as? NSNumber)?.intValue, 0)
         XCTAssertEqual(try delays(in: source), [0.1, 0.2, 0.2])
+    }
+
+    func testDuplicateFailureDiscardsEntryAndClosesOwnerDescriptor() throws {
+        let ownerDescriptor = LockedValue<Int32>(-1)
+
+        XCTAssertThrowsError(
+            try GIFStreamEncoder(
+                store: store,
+                maximumFrames: 1,
+                duplicateDescriptor: { file in
+                    ownerDescriptor.withValue { value in
+                        value = file.withFileDescriptor { $0 }
+                    }
+                    throw InjectedError.failure
+                }
+            )
+        ) { error in
+            XCTAssertEqual(error as? GIFStreamEncoder.EncodingError, .duplicateDescriptorFailed)
+        }
+
+        XCTAssertEqual(try storeEntries(), [])
+        XCTAssertEqual(fcntl(ownerDescriptor.value, F_GETFD), -1)
+    }
+
+    func testConsumerCreationFailureDiscardsEntryAndBalancesContextLifetime() throws {
+        let duplicateDescriptor = LockedValue<Int32>(-1)
+        let closeCalls = LockedValue(0)
+        let destroyedContexts = LockedValue(0)
+
+        XCTAssertThrowsError(
+            try GIFStreamEncoder(
+                store: store,
+                maximumFrames: 1,
+                didDuplicateDescriptor: { descriptor in
+                    duplicateDescriptor.withValue { $0 = descriptor }
+                },
+                closeDescriptor: { descriptor in
+                    closeCalls.withValue { $0 += 1 }
+                    return Darwin.close(descriptor)
+                },
+                consumerFactory: { _, _ in nil },
+                didDestroyConsumerContext: { destroyedContexts.withValue { $0 += 1 } }
+            )
+        ) { error in
+            XCTAssertEqual(error as? GIFStreamEncoder.EncodingError, .consumerCreationFailed)
+        }
+
+        XCTAssertEqual(try storeEntries(), [])
+        XCTAssertEqual(fcntl(duplicateDescriptor.value, F_GETFD), -1)
+        XCTAssertEqual(closeCalls.value, 1)
+        XCTAssertEqual(destroyedContexts.value, 1)
+    }
+
+    func testDestinationCreationFailureDiscardsEntryAndReleasesConsumerContextOnce() throws {
+        let duplicateDescriptor = LockedValue<Int32>(-1)
+        let closeCalls = LockedValue(0)
+        let destroyedContexts = LockedValue(0)
+
+        XCTAssertThrowsError(
+            try GIFStreamEncoder(
+                store: store,
+                maximumFrames: 1,
+                didDuplicateDescriptor: { descriptor in
+                    duplicateDescriptor.withValue { $0 = descriptor }
+                },
+                closeDescriptor: { descriptor in
+                    closeCalls.withValue { $0 += 1 }
+                    return Darwin.close(descriptor)
+                },
+                destinationFactory: { _, _ in nil },
+                didDestroyConsumerContext: { destroyedContexts.withValue { $0 += 1 } }
+            )
+        ) { error in
+            XCTAssertEqual(error as? GIFStreamEncoder.EncodingError, .destinationCreationFailed)
+        }
+
+        XCTAssertEqual(try storeEntries(), [])
+        XCTAssertEqual(fcntl(duplicateDescriptor.value, F_GETFD), -1)
+        XCTAssertEqual(closeCalls.value, 1)
+        XCTAssertEqual(destroyedContexts.value, 1)
     }
 
     func testCarriesCentisecondQuantizationAtCommonFrameRates() async throws {
@@ -397,6 +478,11 @@ final class GIFStreamEncoderTests: XCTestCase {
             XCTAssertNotNil(clamped)
             return try XCTUnwrap(unclamped ?? clamped).doubleValue
         }
+    }
+
+    private func storeEntries() throws -> [String] {
+        let root = directory.appendingPathComponent("store", isDirectory: true)
+        return try FileManager.default.contentsOfDirectory(atPath: root.path)
     }
 
 }
