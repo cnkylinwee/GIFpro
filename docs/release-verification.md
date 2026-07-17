@@ -10,15 +10,15 @@
 | 命令 | 真实结果 |
 | --- | --- |
 | `swift test --filter ImageIODestinationCompatibilityTests` | PASS；2 tests，0 failures |
-| `swift test --parallel` | PASS；188 XCTest + 20 Swift Testing，0 failures |
-| `swift test --parallel -Xswiftc -warnings-as-errors --scratch-path /tmp/GIFpro-task12-strict` | PASS；188 XCTest + 20 Swift Testing，0 failures，编译警告按错误处理 |
+| `swift test --parallel` | PASS；连续 5 轮，每轮 198 XCTest + 20 Swift Testing，0 failures |
+| `swift test --parallel -Xswiftc -warnings-as-errors --scratch-path /tmp/GIFpro-final-strict` | PASS；198 XCTest + 20 Swift Testing，0 failures，编译警告按错误处理 |
 | `swift build -c release --arch arm64` | PASS |
 | `./Scripts/build-app.sh release` | PASS；脚本内全部发布断言通过 |
 | `Tests/ScriptTests/BuildAppReleaseChecksTests.sh` | PASS；注入 `stat` 失败时 release 非零退出，含空格路径的正常 release 通过 |
 | `codesign --verify --deep --strict .build/app/GIFpro.app` | PASS（无诊断输出） |
 | `lipo -archs .build/app/GIFpro.app/Contents/MacOS/GIFpro` | `arm64` |
-| `du -sh .build/app/GIFpro.app` | `928K` |
-| 精确文件逻辑字节数 | `942153` bytes |
+| `du -sh .build/app/GIFpro.app` | `956K` |
+| 精确文件逻辑字节数 | `970473` bytes |
 | `otool -L` | 所有路径均位于 `/System/Library` 或 `/usr/lib` |
 | `plutil -lint`（源与应用包 Info.plist） | 均为 `OK` |
 | `diff -u`（源与应用包 Info.plist） | 无差异 |

@@ -17,9 +17,9 @@
 | 项目 | 当前结果 | 证据 |
 | --- | --- | --- |
 | 合成 GIF 流水线：8/12/15 FPS、1×/2×、丢帧、循环、时长与清理 | PASS（仅当前 macOS 27） | `GIFPipelineTests` 2/2，2026-07-17 |
-| 完整测试套件 | PASS（仅当前 macOS 27） | `swift test --parallel`：188 XCTest + 20 Swift Testing，0 失败，2026-07-17 |
-| 严格警告检查 | PASS（仅当前 macOS 27） | `swift test --parallel -Xswiftc -warnings-as-errors --scratch-path /tmp/GIFpro-task12-strict`，0 失败，2026-07-17 |
-| arm64 Release 构建和应用包检查 | PASS（仅当前 macOS 27） | arm64；942,153 bytes（`du` 928K）；系统库 only；ad-hoc 签名有效；2026-07-17 |
+| 完整测试套件 | PASS（仅当前 macOS 27） | `swift test --parallel` 连续 5 轮：每轮 198 XCTest + 20 Swift Testing，0 失败，2026-07-17 |
+| 严格警告检查 | PASS（仅当前 macOS 27） | `swift test --parallel -Xswiftc -warnings-as-errors --scratch-path /tmp/GIFpro-final-strict`：218 tests，0 失败，2026-07-17 |
+| arm64 Release 构建和应用包检查 | PASS（仅当前 macOS 27） | arm64；970,473 bytes（`du` 956K）；系统库 only；ad-hoc 签名有效；2026-07-17 |
 | 当前系统 ImageIO 兼容性测试 | PASS（不替代 macOS 14 门槛） | 2/2，0 失败，macOS 27，2026-07-17 |
 | macOS 14 ImageIO 兼容性门槛 | PENDING | 必须在 macOS 14 Apple Silicon 执行 |
 | macOS 14 完整测试套件 | PENDING | 必须在 macOS 14 Apple Silicon 执行 |
