@@ -648,6 +648,7 @@ final class RecordingCoordinator: ObservableObject {
         activeFile = nil
         completionNotice = nil
         forcedStopFailure = nil
+        lastUserFacingFailure = nil
         recordingStartTime = nil
         frozenRecordingDuration = nil
         lastPresentationTime = nil

@@ -30,6 +30,7 @@ final class RecordingCoordinatorTests: XCTestCase {
         harness.preview.completeSave(destination)
         XCTAssertEqual(harness.coordinator.state, .idle)
         XCTAssertEqual(harness.tempStore.discardCount, 0)
+        XCTAssertNil(harness.coordinator.lastUserFacingFailure)
     }
 
     func testPreviewRerecordAndDiscardCallbacksClearCoordinatorOwnership() async {
