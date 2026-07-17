@@ -134,6 +134,8 @@ final class SaveAndPreviewController: RecordingPreviewPresenting {
         previewWindow.close()
     }
 
+    func retrySave() { saveAgain() }
+
     func saveAgain() {
         beginSave()
     }

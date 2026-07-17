@@ -103,6 +103,31 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.selection.showCount, 0)
     }
 
+    func testMenuPermissionRecoveryRechecksAndReturnsToSelection() async {
+        let harness = try! Harness(permission: false)
+        await harness.coordinator.toggleRecording()
+        harness.permissions.granted = true
+
+        harness.coordinator.performRecoveryAction(.recheckPermission)
+
+        XCTAssertEqual(harness.permissions.recheckCount, 1)
+        XCTAssertEqual(harness.coordinator.state, .selecting)
+        XCTAssertEqual(harness.selection.showCount, 1)
+    }
+
+    func testMenuSaveRecoveryCallsPreviewRetryAfterSaveFailure() async {
+        let harness = try! Harness()
+        await harness.startRecording()
+        await harness.coordinator.stop(reason: .manual)
+        harness.preview.beginSave()
+        harness.preview.failSave()
+        XCTAssertEqual(harness.coordinator.lastUserFacingFailure, .saveFailed)
+
+        harness.coordinator.performRecoveryAction(.saveAgain)
+
+        XCTAssertEqual(harness.preview.retrySaveCount, 1)
+    }
+
     func testLoadsPreferencesBeforeShowingSelectionAndSavesChanges() async {
         let saved = RecordingSettings(scale: .two, fps: .fifteen, duration: .sixty, showsCursor: false)
         let harness = try! Harness(settings: saved)
@@ -846,7 +871,7 @@ private final class FakeEncoder: RecordingEncoding, @unchecked Sendable {
 
 @MainActor private final class FakePreview: RecordingPreviewPresenting {
     let events: EventRecorder; let shouldFail: Bool; var notices: [RecordingCompletionNotice?] = []; var metadatas: [GIFPreviewMetadata] = []
-    var actions: SaveAndPreviewActions?
+    var actions: SaveAndPreviewActions?; var retrySaveCount = 0
     init(events: EventRecorder, shouldFail: Bool = false) { self.events = events; self.shouldFail = shouldFail }
     func present(file: TemporaryFile, metadata: GIFPreviewMetadata, notice: RecordingCompletionNotice?, actions: SaveAndPreviewActions) throws {
         events.values.append("preview")
@@ -856,6 +881,7 @@ private final class FakeEncoder: RecordingEncoding, @unchecked Sendable {
         self.actions = actions
     }
     func dismiss() { actions = nil }
+    func retrySave() { retrySaveCount += 1 }
     func beginSave() { actions?.saveBegan() }
     func cancelSave() { actions?.saveCancelled() }
     func failSave() { actions?.saveFailed(FakeError()) }

@@ -87,6 +87,7 @@ protocol RecordingEncoding: AnyObject, Sendable {
         actions: SaveAndPreviewActions
     ) throws
     func dismiss()
+    func retrySave()
 }
 
 protocol RecordingClock: Sendable {
@@ -123,6 +124,7 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var elapsedSeconds: TimeInterval = 0
     @Published private(set) var isInFinalTenSeconds = false
     @Published private(set) var saveWarnings: [TemporaryFileStore.SaveWarning] = []
+    @Published private(set) var lastUserFacingFailure: RecordingFailure?
     private(set) var stopReason: RecordingStopReason?
 
     var hasActiveOrUnsavedWork: Bool {
@@ -206,6 +208,18 @@ final class RecordingCoordinator: ObservableObject {
 
     func recheckPermission() -> Bool { permission.recheckAccess() }
 
+    func performRecoveryAction(_ action: MenuBarRecoveryAction) {
+        switch action {
+        case .recheckPermission:
+            guard permission.recheckAccess() else { return }
+            beginSelection()
+        case .rerecord:
+            beginSelection()
+        case .saveAgain:
+            preview.retrySave()
+        }
+    }
+
     func cleanupStaleFiles() throws { try temporaryFiles.cleanupStaleFiles() }
 
     func stop(reason: RecordingStopReason) async {
@@ -255,6 +269,7 @@ final class RecordingCoordinator: ObservableObject {
     private func beginSelection() {
         resetSession()
         saveWarnings = []
+        lastUserFacingFailure = nil
         transition(to: .requestingPermission)
         guard permission.requestAccessIfNeeded() else {
             transition(to: .failed(.permissionDenied))
@@ -648,6 +663,9 @@ final class RecordingCoordinator: ObservableObject {
             return
         }
         state = next
+        if case .failed(let failure) = next {
+            lastUserFacingFailure = failure
+        }
     }
 
     private func previewActions(
@@ -671,11 +689,13 @@ final class RecordingCoordinator: ObservableObject {
                 )
             },
             saveFailed: { [weak self] _ in
-                self?.returnToPreview(
+                guard let self else { return }
+                self.returnToPreview(
                     token: sessionToken,
                     file: sessionFile,
                     identityURL: identityURL
                 )
+                self.lastUserFacingFailure = .saveFailed
             },
             saveWarning: { [weak self] warning in
                 guard let self,
