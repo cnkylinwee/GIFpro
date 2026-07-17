@@ -43,7 +43,11 @@ final class GIFproApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        hotKeyController.stop()
+        do {
+            try hotKeyController.stop()
+        } catch {
+            Logger.lifecycle.error("Could not unregister ⌥⌘G: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }
 
