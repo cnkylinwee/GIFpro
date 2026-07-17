@@ -1,9 +1,12 @@
 import Darwin
 import Foundation
 
-final class TemporaryFile {
-    let url: URL
+final class TemporaryFile: CustomStringConvertible {
     let name: String
+
+    var description: String {
+        "Temporary GIF \(name)"
+    }
 
     fileprivate let ownerID: UUID
     fileprivate let device: dev_t
@@ -11,14 +14,12 @@ final class TemporaryFile {
     private let descriptor: Int32
 
     fileprivate init(
-        url: URL,
         name: String,
         descriptor: Int32,
         ownerID: UUID,
         device: dev_t,
         inode: ino_t
     ) {
-        self.url = url
         self.name = name
         self.descriptor = descriptor
         self.ownerID = ownerID
@@ -78,7 +79,7 @@ final class TemporaryFileStore {
 
     enum StoreError: Error, Equatable {
         case unsafeURL(URL)
-        case invalidSource(URL)
+        case invalidSource(String)
         case foreignTemporaryFile
         case capacityUnavailable
         case systemCall(String, Int32)
@@ -147,6 +148,8 @@ final class TemporaryFileStore {
     private let ownerID = UUID()
     private let descriptorLock = NSLock()
     private var pinnedRootDescriptor: Int32?
+    private var pinnedRootDevice: dev_t?
+    private var pinnedRootInode: ino_t?
 
     init(
         fileManager: FileManager = .default,
@@ -211,7 +214,6 @@ final class TemporaryFileStore {
                 throw StoreError.systemCall("fstat temporary file", code)
             }
             return TemporaryFile(
-                url: rootURL.appendingPathComponent(name, isDirectory: false),
                 name: name,
                 descriptor: descriptor,
                 ownerID: ownerID,
@@ -231,7 +233,7 @@ final class TemporaryFileStore {
         }
         let rootDescriptor = try rootDescriptor()
         guard try entryIdentity(of: temporaryFile, in: rootDescriptor) == .matches else {
-            throw StoreError.invalidSource(temporaryFile.url)
+            throw StoreError.invalidSource(temporaryFile.description)
         }
         try validateOpenTemporaryFile(temporaryFile)
 
@@ -301,7 +303,9 @@ final class TemporaryFileStore {
             switch try removeMatchingSource(temporaryFile, from: rootDescriptor) {
             case .matches:
                 break
-            case .missing, .changed:
+            case .missing:
+                break
+            case .changed:
                 cleanupPending = true
                 warnings.append(.sourceChanged)
             }
@@ -324,10 +328,34 @@ final class TemporaryFileStore {
         case .missing:
             return
         case .changed:
-            throw StoreError.invalidSource(temporaryFile.url)
+            throw StoreError.invalidSource(temporaryFile.description)
         case .matches:
             return
         }
+    }
+
+    /// Returns a lexical path only after momentarily proving that it still names
+    /// the pinned root and handle inode. This is for path-only readers such as
+    /// Quick Look; encoders and other writers must keep using the handle fd.
+    func validatedAccessURL(for temporaryFile: TemporaryFile) throws -> URL {
+        try validateOwner(of: temporaryFile)
+        let rootDescriptor = try rootDescriptor()
+        guard let pinnedRootDevice, let pinnedRootInode else {
+            throw StoreError.invalidSource(temporaryFile.description)
+        }
+
+        var lexicalRootStatus = stat()
+        let rootStatusResult = rootURL.path.withCString {
+            lstat($0, &lexicalRootStatus)
+        }
+        guard rootStatusResult == 0,
+              lexicalRootStatus.st_mode & S_IFMT == S_IFDIR,
+              lexicalRootStatus.st_dev == pinnedRootDevice,
+              lexicalRootStatus.st_ino == pinnedRootInode,
+              try entryIdentity(of: temporaryFile, in: rootDescriptor) == .matches else {
+            throw StoreError.invalidSource(temporaryFile.description)
+        }
+        return rootURL.appendingPathComponent(temporaryFile.name, isDirectory: false)
     }
 
     func cleanupStaleFiles() throws {
@@ -357,7 +385,7 @@ final class TemporaryFileStore {
                   status.st_mode & S_IFMT == S_IFREG,
                   status.st_dev == temporaryFile.device,
                   status.st_ino == temporaryFile.inode else {
-                throw StoreError.invalidSource(temporaryFile.url)
+                throw StoreError.invalidSource(temporaryFile.description)
             }
         }
     }
@@ -477,7 +505,7 @@ final class TemporaryFileStore {
             in: rootDescriptor
         )
         guard placeholderIdentity == .matches else {
-            throw StoreError.invalidSource(temporaryFile.url)
+            throw StoreError.invalidSource(temporaryFile.description)
         }
         let placeholderRemoval = temporaryFile.name.withCString {
             unlinkat(rootDescriptor, $0, 0)
@@ -548,6 +576,8 @@ final class TemporaryFileStore {
             throw StoreError.systemCall("fstat root", code)
         }
         pinnedRootDescriptor = descriptor
+        pinnedRootDevice = status.st_dev
+        pinnedRootInode = status.st_ino
         return descriptor
     }
 
@@ -605,7 +635,7 @@ final class TemporaryFileStore {
                 throw StoreError.systemCall("unlinkat cleanup directory", errno)
             }
         default:
-            throw StoreError.invalidSource(rootURL.appendingPathComponent(name))
+            throw StoreError.invalidSource("Unexpected entry \(name)")
         }
     }
 

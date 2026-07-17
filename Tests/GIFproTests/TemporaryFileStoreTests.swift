@@ -31,10 +31,9 @@ final class TemporaryFileStoreTests: XCTestCase {
         let temporaryFile = try makeStore().makeTemporaryFile()
 
         XCTAssertTrue(fileManager.fileExists(atPath: rootURL.path))
-        XCTAssertEqual(temporaryFile.url.deletingLastPathComponent().standardizedFileURL, rootURL.standardizedFileURL)
-        XCTAssertEqual(temporaryFile.url.pathExtension, "gif")
+        XCTAssertEqual(URL(fileURLWithPath: temporaryFile.name).pathExtension, "gif")
         XCTAssertNotNil(UUID(uuidString: temporaryFile.name.dropLast(4).description))
-        XCTAssertTrue(fileManager.fileExists(atPath: temporaryFile.url.path))
+        XCTAssertTrue(fileManager.fileExists(atPath: lexicalURL(for: temporaryFile).path))
         let descriptor = rootFD()
         defer { close(descriptor) }
         var status = stat()
@@ -70,6 +69,41 @@ final class TemporaryFileStoreTests: XCTestCase {
         try fileManager.removeItem(at: rootURL)
         try Data("not-directory".utf8).write(to: rootURL)
         XCTAssertThrowsError(try makeStore().makeTemporaryFile())
+    }
+
+    func testValidatedAccessURLReturnsCurrentOwnedPath() throws {
+        let store = makeStore()
+        let temporaryFile = try store.makeTemporaryFile()
+
+        let accessURL = try store.validatedAccessURL(for: temporaryFile)
+
+        XCTAssertEqual(accessURL, rootURL.appendingPathComponent(temporaryFile.name))
+    }
+
+    func testValidatedAccessURLRejectsRootSwap() throws {
+        let store = makeStore()
+        let temporaryFile = try store.makeTemporaryFile()
+        let movedRoot = testDirectory.appendingPathComponent("original-root", isDirectory: true)
+        try fileManager.moveItem(at: rootURL, to: movedRoot)
+        let outsideDirectory = testDirectory.appendingPathComponent("outside", isDirectory: true)
+        try fileManager.createDirectory(at: outsideDirectory, withIntermediateDirectories: true)
+        try fileManager.createSymbolicLink(at: rootURL, withDestinationURL: outsideDirectory)
+
+        XCTAssertThrowsError(try store.validatedAccessURL(for: temporaryFile))
+    }
+
+    func testValidatedAccessURLRejectsLeafSwapAndMissingLeaf() throws {
+        let store = makeStore()
+        let temporaryFile = try store.makeTemporaryFile()
+        let lexicalURL = rootURL.appendingPathComponent(temporaryFile.name)
+        let movedOriginal = rootURL.appendingPathComponent("moved-original.gif")
+        try fileManager.moveItem(at: lexicalURL, to: movedOriginal)
+        try Data("replacement".utf8).write(to: lexicalURL)
+
+        XCTAssertThrowsError(try store.validatedAccessURL(for: temporaryFile))
+
+        try fileManager.removeItem(at: lexicalURL)
+        XCTAssertThrowsError(try store.validatedAccessURL(for: temporaryFile))
     }
 
     func testTemporaryFileDescriptorClosesExactlyOnceAndDuplicatesRemainCallerOwned() throws {
@@ -108,7 +142,7 @@ final class TemporaryFileStoreTests: XCTestCase {
         try store.discardTemporaryFile(temporaryFile)
         try store.discardTemporaryFile(temporaryFile)
 
-        XCTAssertFalse(fileManager.fileExists(atPath: temporaryFile.url.path))
+        XCTAssertFalse(fileManager.fileExists(atPath: lexicalURL(for: temporaryFile).path))
     }
 
     func testForeignStoreHandleCannotBeDiscardedOrSaved() throws {
@@ -133,10 +167,10 @@ final class TemporaryFileStoreTests: XCTestCase {
         let temporaryFile = try store.makeTemporaryFile()
         try write(Data("owned".utf8), to: temporaryFile)
         let movedOriginal = rootURL.appendingPathComponent("moved-original.gif")
-        try fileManager.moveItem(at: temporaryFile.url, to: movedOriginal)
+        try fileManager.moveItem(at: lexicalURL(for: temporaryFile), to: movedOriginal)
         let outsideTarget = testDirectory.appendingPathComponent("outside.gif")
         try Data("outside".utf8).write(to: outsideTarget)
-        try fileManager.createSymbolicLink(at: temporaryFile.url, withDestinationURL: outsideTarget)
+        try fileManager.createSymbolicLink(at: lexicalURL(for: temporaryFile), withDestinationURL: outsideTarget)
 
         XCTAssertThrowsError(try store.discardTemporaryFile(temporaryFile))
 
@@ -185,7 +219,7 @@ final class TemporaryFileStoreTests: XCTestCase {
 
         XCTAssertEqual(result, .saved(destinationURL: destination))
         XCTAssertEqual(try Data(contentsOf: destination), Data("new".utf8))
-        XCTAssertFalse(fileManager.fileExists(atPath: temporaryFile.url.path))
+        XCTAssertFalse(fileManager.fileExists(atPath: lexicalURL(for: temporaryFile).path))
     }
 
     func testSaveAfterRootSwapUsesPinnedSourceAndLeavesOutsideFileUntouched() throws {
@@ -243,7 +277,7 @@ final class TemporaryFileStoreTests: XCTestCase {
             .saved(destinationURL: destination, warnings: [.destinationDirectorySyncFailed])
         )
         XCTAssertEqual(try Data(contentsOf: destination), Data("new".utf8))
-        XCTAssertFalse(fileManager.fileExists(atPath: temporaryFile.url.path))
+        XCTAssertFalse(fileManager.fileExists(atPath: lexicalURL(for: temporaryFile).path))
     }
 
     func testUnlinkFailureAfterCommitReturnsCleanupPendingWithoutThrowing() throws {
@@ -266,7 +300,27 @@ final class TemporaryFileStoreTests: XCTestCase {
         )
         XCTAssertEqual(try Data(contentsOf: destination), Data("new".utf8))
         XCTAssertEqual(try read(from: temporaryFile), Data("new".utf8))
-        XCTAssertTrue(fileManager.fileExists(atPath: temporaryFile.url.path))
+        XCTAssertTrue(fileManager.fileExists(atPath: lexicalURL(for: temporaryFile).path))
+    }
+
+    func testSourceAlreadyMissingAfterCommitIsNotCleanupPending() throws {
+        var sourceURL: URL!
+        var operations = TemporaryFileStore.FileOperations.posix
+        let replace = operations.replaceStaging
+        operations.replaceStaging = { descriptor, stagingName, destinationName in
+            try replace(descriptor, stagingName, destinationName)
+            try self.fileManager.removeItem(at: sourceURL)
+        }
+        let store = makeStore(fileOperations: operations)
+        let temporaryFile = try store.makeTemporaryFile()
+        sourceURL = lexicalURL(for: temporaryFile)
+        try write(Data("owned".utf8), to: temporaryFile)
+        let destination = testDirectory.appendingPathComponent("saved.gif")
+
+        let result = try store.saveTemporaryFile(temporaryFile, to: destination)
+
+        XCTAssertEqual(result, .saved(destinationURL: destination))
+        XCTAssertEqual(try Data(contentsOf: destination), Data("owned".utf8))
     }
 
     func testLeafSwapAfterCommitIsNotUnlinkedAndReturnsCleanupPending() throws {
@@ -281,7 +335,7 @@ final class TemporaryFileStoreTests: XCTestCase {
         }
         let store = makeStore(fileOperations: operations)
         let temporaryFile = try store.makeTemporaryFile()
-        sourceURL = temporaryFile.url
+        sourceURL = lexicalURL(for: temporaryFile)
         movedOriginal = rootURL.appendingPathComponent("moved-original.gif")
         try write(Data("owned".utf8), to: temporaryFile)
         let destination = testDirectory.appendingPathComponent("saved.gif")
@@ -363,5 +417,9 @@ final class TemporaryFileStoreTests: XCTestCase {
 
     private func rootFD() -> Int32 {
         open(rootURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    }
+
+    private func lexicalURL(for temporaryFile: TemporaryFile) -> URL {
+        rootURL.appendingPathComponent(temporaryFile.name)
     }
 }
