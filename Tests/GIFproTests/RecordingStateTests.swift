@@ -43,6 +43,14 @@ final class RecordingStateTests: XCTestCase {
         XCTAssertTrue(RecordingState.previewReady(previewURL).canTransition(to: .selecting))
     }
 
+    func testSavedPreviewCannotStartAReplacementRecording() {
+        XCTAssertFalse(RecordingState.savedPreview(savedURL).canTransition(to: .selecting))
+    }
+
+    func testSavedPreviewCannotBeDiscarded() {
+        XCTAssertFalse(RecordingState.savedPreview(savedURL).canTransition(to: .discarding))
+    }
+
     func testCancellationDiscardAndFailureRecoveryTransitions() {
         XCTAssertTrue(RecordingState.selecting.canTransition(to: .cancelling))
         XCTAssertTrue(RecordingState.countingDown.canTransition(to: .cancelling))

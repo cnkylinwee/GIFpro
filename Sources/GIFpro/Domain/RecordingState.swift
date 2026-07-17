@@ -89,10 +89,10 @@ enum RecordingState: Equatable, Sendable {
 
         case .savedPreview:
             switch next {
-            case .idle, .selecting, .discarding: return true
-            case .requestingPermission, .countingDown, .recording, .finalizing,
-                 .previewReady, .awaitingSave, .savedPreview, .cancelling,
-                 .failed: return false
+            case .idle: return true
+            case .requestingPermission, .selecting, .countingDown, .recording,
+                 .finalizing, .previewReady, .awaitingSave, .savedPreview,
+                 .discarding, .cancelling, .failed: return false
             }
 
         case .discarding:
