@@ -82,6 +82,18 @@ protocol RecordingClock: Sendable {
     func sleep(for duration: TimeInterval) async throws
 }
 
+@MainActor
+protocol RecordingStopRequestScheduling: AnyObject {
+    func schedule(_ operation: @escaping @MainActor () async -> Void)
+}
+
+@MainActor
+final class ImmediateStopRequestScheduler: RecordingStopRequestScheduling {
+    func schedule(_ operation: @escaping @MainActor () async -> Void) {
+        Task { @MainActor in await operation() }
+    }
+}
+
 struct SystemRecordingClock: RecordingClock {
     func now() -> TimeInterval {
         CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
@@ -123,6 +135,7 @@ final class RecordingCoordinator: ObservableObject {
     private let preferences: any RecordingPreferencesManaging
     private let preview: any RecordingPreviewPresenting
     private let clock: any RecordingClock
+    private let stopRequestScheduler: any RecordingStopRequestScheduling
 
     private var token = UUID()
     private var settings = RecordingSettings.default
@@ -148,7 +161,8 @@ final class RecordingCoordinator: ObservableObject {
         temporaryFiles: any RecordingTemporaryFileManaging,
         preferences: any RecordingPreferencesManaging,
         preview: any RecordingPreviewPresenting,
-        clock: any RecordingClock = SystemRecordingClock()
+        clock: any RecordingClock = SystemRecordingClock(),
+        stopRequestScheduler: (any RecordingStopRequestScheduling)? = nil
     ) {
         self.permission = permission
         self.selection = selection
@@ -159,6 +173,7 @@ final class RecordingCoordinator: ObservableObject {
         self.preferences = preferences
         self.preview = preview
         self.clock = clock
+        self.stopRequestScheduler = stopRequestScheduler ?? ImmediateStopRequestScheduler()
     }
 
     func toggleRecording() async {
@@ -327,9 +342,10 @@ final class RecordingCoordinator: ObservableObject {
                             encoder: encoder
                         ) == true
                         if shouldRequestStop {
-                            Task { @MainActor [weak self] in
-                                await self?.stop(reason: .captureFailure)
-                            }
+                            await self?.scheduleFailureStopRequest(
+                                token: sessionToken,
+                                encoder: encoder
+                            )
                         }
                         throw error
                     }
@@ -448,6 +464,20 @@ final class RecordingCoordinator: ObservableObject {
               state == .recording || state == .finalizing else { return false }
         forcedStopFailure = forcedStopFailure ?? failure
         return state == .recording
+    }
+
+    private func scheduleFailureStopRequest(
+        token sessionToken: UUID,
+        encoder sessionEncoder: any RecordingEncoding
+    ) {
+        stopRequestScheduler.schedule { [weak self] in
+            guard let self,
+                  self.token == sessionToken,
+                  self.encoder === sessionEncoder,
+                  self.forcedStopFailure != nil,
+                  self.state == .recording else { return }
+            await self.stop(reason: .captureFailure)
+        }
     }
 
     private func performStop(token sessionToken: UUID) async {

@@ -478,6 +478,30 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.tempStore.discardCount, 0)
     }
 
+    func testDelayedFailureStopRequestCannotStopReplacementSession() async {
+        let scheduler = GateStopRequestScheduler()
+        let harness = try! Harness(
+            appendFailure: true,
+            stopRequestScheduler: scheduler
+        )
+        await harness.startRecording()
+        do { try await harness.capture.deliver(pts: 10) } catch { }
+        XCTAssertEqual(scheduler.pendingCount, 1)
+
+        await harness.coordinator.stop(reason: .manual)
+        XCTAssertEqual(harness.coordinator.state, .failed(.captureFailed))
+        await harness.coordinator.toggleRecording()
+        harness.selection.record(harness.region, .default)
+        await eventually { harness.coordinator.state == .countingDown }
+        let discardCount = harness.tempStore.discardCount
+
+        await scheduler.releaseNext()
+
+        XCTAssertEqual(harness.coordinator.state, .countingDown)
+        XCTAssertEqual(harness.tempStore.discardCount, discardCount)
+        XCTAssertEqual(harness.encoderFactory.makeCount, 2)
+    }
+
     private func assertLateCaptureCompletionDoesNotMutateNewSession(error: Error?) async {
         let harness = try! Harness(suspendCaptureStart: true, releaseCaptureStartOnStop: false)
         await harness.startRecording()
@@ -513,7 +537,7 @@ private final class Harness {
     let recorder = EventRecorder()
     let region = CaptureRegion(displayID: 42, globalRect: .init(x: 0, y: 0, width: 100, height: 80), sourceRect: .init(x: 0, y: 0, width: 100, height: 80), logicalPixelSize: .init(width: 100, height: 80), outputPixelSize: .init(width: 100, height: 80), backingScale: 1)
 
-    init(permission: Bool = true, settings: RecordingSettings = .default, capacity: TemporaryFileStore.CapacityPolicy = .canStart, capacityError: Bool = false, encoderFailure: Bool = false, finishFailure: Bool = false, suspendCaptureStart: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseCaptureStartOnStop: Bool = true, captureStartError: Error? = nil, appendFailure: Bool = false, frameDuringStopPTS: TimeInterval? = nil) throws {
+    init(permission: Bool = true, settings: RecordingSettings = .default, capacity: TemporaryFileStore.CapacityPolicy = .canStart, capacityError: Bool = false, encoderFailure: Bool = false, finishFailure: Bool = false, suspendCaptureStart: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseCaptureStartOnStop: Bool = true, captureStartError: Error? = nil, appendFailure: Bool = false, frameDuringStopPTS: TimeInterval? = nil, stopRequestScheduler: (any RecordingStopRequestScheduling)? = nil) throws {
         permissions = FakePermissions(granted: permission)
         capture = FakeCapture(events: recorder, suspendStart: suspendCaptureStart, frameBeforeStartReturnPTS: frameBeforeStartReturnPTS, releaseStartOnStop: releaseCaptureStartOnStop, startError: captureStartError, frameDuringStopPTS: frameDuringStopPTS)
         tempStore = try FakeTempStore(events: recorder, capacity: capacity, capacityError: capacityError)
@@ -523,7 +547,7 @@ private final class Harness {
         let secondEncoder = FakeEncoder(file: try tempStore.make(), events: recorder, finishFailure: finishFailure, appendFailure: appendFailure)
         encoderFactory = FakeEncoderFactory(encoders: [encoder, secondEncoder], shouldFail: encoderFailure)
         selection.events = recorder
-        coordinator = RecordingCoordinator(permission: permissions, selection: selection, capture: capture, processor: processor, encoderFactory: encoderFactory, temporaryFiles: tempStore, preferences: preferences, preview: preview, clock: clock)
+        coordinator = RecordingCoordinator(permission: permissions, selection: selection, capture: capture, processor: processor, encoderFactory: encoderFactory, temporaryFiles: tempStore, preferences: preferences, preview: preview, clock: clock, stopRequestScheduler: stopRequestScheduler ?? ImmediateStopRequestScheduler())
     }
 
     func beginSelectionAndRecord() async {
@@ -655,6 +679,14 @@ private final class ManualRecordingClock: RecordingClock, @unchecked Sendable {
     var pendingSleepCount: Int { lock.withLock { waiters.count } }
     func sleep(for duration: TimeInterval) async { await withCheckedContinuation { continuation in lock.withLock { waiters.append((instant + duration, continuation)) } } }
     func advance(by duration: TimeInterval) { let ready: [CheckedContinuation<Void, Never>] = lock.withLock { instant += duration; let values = waiters.filter { $0.0 <= instant }.map(\.1); waiters.removeAll { $0.0 <= instant }; return values }; ready.forEach { $0.resume() } }
+}
+
+@MainActor
+private final class GateStopRequestScheduler: RecordingStopRequestScheduling {
+    private var operations: [@MainActor () async -> Void] = []
+    var pendingCount: Int { operations.count }
+    func schedule(_ operation: @escaping @MainActor () async -> Void) { operations.append(operation) }
+    func releaseNext() async { await operations.removeFirst()() }
 }
 
 private func makeFrame(pts: TimeInterval) -> CapturedFrame {
