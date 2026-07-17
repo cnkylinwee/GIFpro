@@ -102,7 +102,10 @@ final class SelectionControlPanelTests: XCTestCase {
     }
 
     func testControllerRejectsRecordingWithoutCountdownOwnerAndSelection() {
-        let controller = SelectionOverlayController()
+        let controller = SelectionOverlayController(
+            environment: makeEnvironment(),
+            displayMonitor: StubSelectionOverlayDisplayMonitor()
+        )
         let hidden = controller.auxiliarySnapshot
 
         controller.startRecordingVisualState(onStop: {})
@@ -121,6 +124,8 @@ final class SelectionControlPanelTests: XCTestCase {
     func testControllerDoesNotCommitRecordingWhenPanelInstallationFails() throws {
         var rejectsRecordingInstallation = true
         let controller = SelectionOverlayController(
+            environment: makeEnvironment(),
+            displayMonitor: StubSelectionOverlayDisplayMonitor(),
             auxiliaryPanelInstallationGate: { phase in
                 phase != .recording || !rejectsRecordingInstallation
             }
@@ -245,7 +250,11 @@ final class SelectionControlPanelTests: XCTestCase {
 
     func testControllerPassesItsInjectedLoaderToSelectionControls() throws {
         let loader = StubTemplateControlImageLoader()
-        let controller = SelectionOverlayController(imageLoader: loader)
+        let controller = SelectionOverlayController(
+            imageLoader: loader,
+            environment: makeEnvironment(),
+            displayMonitor: StubSelectionOverlayDisplayMonitor()
+        )
         controller.show()
         defer { controller.dismiss() }
 
@@ -373,6 +382,35 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertEqual(clamped.statusFrame, CGRect(x: -400, y: -38, width: 200, height: 28))
     }
 
+    func testStatusOnlyRequiresItsExactMinimumSizeAndReportsUnavailableOnce() {
+        let selection = CGRect(x: -50, y: -20, width: 100, height: 28)
+        let exact = RecordingOverlayPresentation.layout(
+            input: .statusOnly,
+            selectionRect: selection,
+            visibleFrame: CGRect(x: -50, y: -20, width: 100, height: 28)
+        )
+        XCTAssertEqual(exact.mode, .statusOnly)
+        XCTAssertEqual(exact.statusFrame, CGRect(x: -50, y: -20, width: 100, height: 28))
+
+        for visible in [
+            CGRect(x: -50, y: -20, width: 99, height: 28),
+            CGRect(x: -50, y: -20, width: 100, height: 27),
+            CGRect(x: -50, y: -20, width: 40, height: 20),
+        ] {
+            var errors: [String] = []
+            let unavailable = RecordingOverlayPresentation.layout(
+                input: .statusOnly,
+                selectionRect: selection,
+                visibleFrame: visible,
+                errorSink: { errors.append($0) }
+            )
+            XCTAssertEqual(unavailable.mode, .unavailable)
+            XCTAssertNil(unavailable.statusFrame)
+            XCTAssertNil(unavailable.stopFrame)
+            XCTAssertEqual(errors.count, 1)
+        }
+    }
+
     func testLifecycleTransitionsAndInvalidatesGeneration() {
         var lifecycle = RecordingOverlayLifecycle()
         XCTAssertEqual(lifecycle.snapshot.phase, .hidden)
@@ -441,8 +479,14 @@ final class SelectionControlPanelTests: XCTestCase {
             .init(displayID: 8, frame: CGRect(x: -100, y: -300, width: 300, height: 300), visibleFrame: CGRect(x: -100, y: -300, width: 300, height: 300), backingScaleFactor: 1),
         ])
         let loader = StubTemplateControlImageLoader()
-        let controller = SelectionOverlayController(imageLoader: loader, environment: environment)
+        let monitor = StubSelectionOverlayDisplayMonitor()
+        let controller = SelectionOverlayController(
+            imageLoader: loader,
+            environment: environment,
+            displayMonitor: monitor
+        )
         controller.show()
+        XCTAssertEqual(monitor.startCount, 1)
         XCTAssertEqual(controller.lifecycleSnapshot.phase, .selecting)
         XCTAssertEqual(controller.lifecycleSnapshot.overlayDisplayIDs, [7, 8])
 
@@ -489,16 +533,21 @@ final class SelectionControlPanelTests: XCTestCase {
         controller.showStoppingVisualState()
         XCTAssertEqual(controller.lifecycleSnapshot.phase, .stopping)
         controller.dismiss()
+        XCTAssertGreaterThanOrEqual(monitor.stopCount, 1)
         XCTAssertEqual(controller.lifecycleSnapshot.phase, .hidden)
         XCTAssertTrue(controller.lifecycleSnapshot.overlayDisplayIDs.isEmpty)
     }
 
     func testUnavailableRecordingLayoutReportsOnceAndCommitsRecordingWithoutPanels() throws {
         let environment = StubSelectionOverlayEnvironment(displays: [
-            .init(displayID: 9, frame: CGRect(x: 0, y: 0, width: 100, height: 100), visibleFrame: CGRect(x: 0, y: 0, width: 40, height: 40), backingScaleFactor: 1),
+            .init(displayID: 9, frame: CGRect(x: 0, y: 0, width: 100, height: 100), visibleFrame: CGRect(x: 0, y: 0, width: 100, height: 28), backingScaleFactor: 1),
         ])
         var errors: [String] = []
-        let controller = SelectionOverlayController(environment: environment, layoutErrorSink: { errors.append($0) })
+        let controller = SelectionOverlayController(
+            environment: environment,
+            displayMonitor: StubSelectionOverlayDisplayMonitor(),
+            layoutErrorSink: { errors.append($0) }
+        )
         controller.show()
         let view = try XCTUnwrap(controller.selectionOverlayViews[9])
         XCTAssertTrue(view.onDragBegan?() == true)
@@ -519,6 +568,80 @@ final class SelectionControlPanelTests: XCTestCase {
         controller.dismiss()
     }
 
+    func testControllerInvalidatesRetainedStopAfterStoppingDisplayLossAndDismiss() throws {
+        for invalidation: StopInvalidation in [.stopping, .displayLoss, .dismiss] {
+            var stopCount = 0
+            let session = try makeRecordingSession { stopCount += 1 }
+            let retainedTarget = try XCTUnwrap(session.controller.stopActionTarget)
+            let oldGeneration = session.controller.lifecycleSnapshot.generation
+
+            switch invalidation {
+            case .stopping:
+                session.controller.showStoppingVisualState()
+            case .displayLoss:
+                session.monitor.send(.init(added: [], removed: [42], updated: []))
+            case .dismiss:
+                session.controller.dismiss()
+            }
+
+            XCTAssertGreaterThan(session.controller.lifecycleSnapshot.generation, oldGeneration)
+            session.stopButton.performClick(nil)
+            XCTAssertFalse(session.stopButton.accessibilityPerformPress())
+            XCTAssertFalse(retainedTarget.fired)
+            XCTAssertEqual(stopCount, 0)
+            XCTAssertFalse(session.controller.auxiliarySnapshot.hasStopPanel)
+            session.controller.dismiss()
+        }
+    }
+
+    func testReplacementSessionInvalidatesOldStopWithoutAffectingNewStop() throws {
+        var oldStopCount = 0
+        let first = try makeRecordingSession { oldStopCount += 1 }
+        let oldTarget = try XCTUnwrap(first.controller.stopActionTarget)
+        let oldGeneration = first.controller.lifecycleSnapshot.generation
+
+        first.controller.show()
+        XCTAssertEqual(first.controller.lifecycleSnapshot.phase, .selecting)
+        XCTAssertGreaterThan(first.controller.lifecycleSnapshot.generation, oldGeneration)
+        first.stopButton.performClick(nil)
+        XCTAssertFalse(first.stopButton.accessibilityPerformPress())
+        XCTAssertFalse(oldTarget.fired)
+        XCTAssertEqual(oldStopCount, 0)
+
+        let view = try XCTUnwrap(first.controller.selectionOverlayViews[42])
+        XCTAssertTrue(view.onDragBegan?() == true)
+        let selection = CGRect(x: 100, y: 100, width: 200, height: 120)
+        view.selectionRect = selection
+        view.onSelectionCompleted?(selection)
+        first.controller.showCountdown(value: 3, targetDisplayID: 42)
+        var newStopCount = 0
+        first.controller.startRecordingVisualState { newStopCount += 1 }
+        let newButton = try XCTUnwrap(first.environment.auxiliaryPanels.last?.contentView as? TemplateControlButton)
+        newButton.performClick(nil)
+
+        XCTAssertEqual(oldStopCount, 0)
+        XCTAssertEqual(newStopCount, 1)
+        first.controller.dismiss()
+    }
+
+    func testCancelUsesControllerLifecycleAndAdvancesGeneration() throws {
+        let environment = makeEnvironment()
+        let monitor = StubSelectionOverlayDisplayMonitor()
+        let controller = SelectionOverlayController(environment: environment, displayMonitor: monitor)
+        var cancelCount = 0
+        controller.onCancel = { cancelCount += 1 }
+        controller.show()
+        let generation = controller.lifecycleSnapshot.generation
+
+        try XCTUnwrap(environment.selectionPanels.first).cancelOperation(nil)
+
+        XCTAssertEqual(cancelCount, 1)
+        XCTAssertEqual(controller.lifecycleSnapshot.phase, .hidden)
+        XCTAssertGreaterThan(controller.lifecycleSnapshot.generation, generation)
+        XCTAssertTrue(controller.selectionOverlayViews.isEmpty)
+        XCTAssertGreaterThanOrEqual(monitor.stopCount, 1)
+    }
+
     private func makePanel() -> SelectionControlPanel {
         SelectionControlPanel(
             contentRect: CGRect(x: 0, y: 0, width: 500, height: 52),
@@ -526,6 +649,66 @@ final class SelectionControlPanelTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+    }
+
+    private func makeEnvironment() -> StubSelectionOverlayEnvironment {
+        StubSelectionOverlayEnvironment(displays: [
+            .init(
+                displayID: 42,
+                frame: CGRect(x: 0, y: 0, width: 1_000, height: 800),
+                visibleFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800),
+                backingScaleFactor: 2
+            ),
+        ])
+    }
+
+    private enum StopInvalidation {
+        case stopping
+        case displayLoss
+        case dismiss
+    }
+
+    private func makeRecordingSession(
+        onStop: @escaping () -> Void
+    ) throws -> (
+        controller: SelectionOverlayController,
+        environment: StubSelectionOverlayEnvironment,
+        monitor: StubSelectionOverlayDisplayMonitor,
+        stopButton: TemplateControlButton
+    ) {
+        let environment = StubSelectionOverlayEnvironment(displays: [
+            .init(displayID: 42, frame: CGRect(x: 0, y: 0, width: 1_000, height: 800), visibleFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800), backingScaleFactor: 2),
+            .init(displayID: 43, frame: CGRect(x: 1_000, y: 0, width: 800, height: 600), visibleFrame: CGRect(x: 1_000, y: 0, width: 800, height: 600), backingScaleFactor: 1),
+        ])
+        let monitor = StubSelectionOverlayDisplayMonitor()
+        let controller = SelectionOverlayController(
+            imageLoader: StubTemplateControlImageLoader(),
+            environment: environment,
+            displayMonitor: monitor
+        )
+        controller.show()
+        let view = try XCTUnwrap(controller.selectionOverlayViews[42])
+        XCTAssertTrue(view.onDragBegan?() == true)
+        let selection = CGRect(x: 100, y: 100, width: 200, height: 120)
+        view.selectionRect = selection
+        view.onSelectionCompleted?(selection)
+        controller.showCountdown(value: 3, targetDisplayID: 42)
+        controller.startRecordingVisualState(onStop: onStop)
+        let statusPanel = try XCTUnwrap(environment.auxiliaryPanels.dropLast().last)
+        let stopPanel = try XCTUnwrap(environment.auxiliaryPanels.last)
+        let stopButton = try XCTUnwrap(stopPanel.contentView as? TemplateControlButton)
+
+        XCTAssertEqual(controller.lifecycleSnapshot.phase, .recording)
+        XCTAssertEqual(controller.lifecycleSnapshot.overlayDisplayIDs, [42])
+        XCTAssertEqual(controller.selectionOverlayViews.keys.sorted(), [42])
+        XCTAssertTrue(environment.selectionPanels[0].ignoresMouseEvents)
+        XCTAssertTrue(statusPanel.ignoresMouseEvents)
+        XCTAssertFalse(stopPanel.ignoresMouseEvents)
+        XCTAssertTrue(controller.lifecycleSnapshot.hasStatusPanel)
+        XCTAssertTrue(controller.lifecycleSnapshot.hasStopPanel)
+        XCTAssertEqual(controller.auxiliarySnapshot.hasStatusPanel, controller.lifecycleSnapshot.hasStatusPanel)
+        XCTAssertEqual(controller.auxiliarySnapshot.hasStopPanel, controller.lifecycleSnapshot.hasStopPanel)
+        return (controller, environment, monitor, stopButton)
     }
 
     private func assertInteractionStates(
@@ -639,5 +822,26 @@ private final class StubSelectionOverlayEnvironment: SelectionOverlayEnvironment
         )
         auxiliaryPanels.append(panel)
         return panel
+    }
+}
+
+@MainActor
+private final class StubSelectionOverlayDisplayMonitor: SelectionOverlayDisplayMonitoring {
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+    private var handler: (@MainActor @Sendable (DisplayConfigurationChange) -> Void)?
+
+    func start(onChange: @escaping @MainActor @Sendable (DisplayConfigurationChange) -> Void) {
+        startCount += 1
+        handler = onChange
+    }
+
+    func stop() {
+        stopCount += 1
+        handler = nil
+    }
+
+    func send(_ change: DisplayConfigurationChange) {
+        handler?(change)
     }
 }

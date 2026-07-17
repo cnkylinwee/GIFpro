@@ -516,6 +516,18 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.capture.stopCount, 1)
     }
 
+    func testUnavailableProductionRecordingLayoutKeepsRealCoordinatorRecordingWithMenuFallback() async {
+        let harness = try! Harness(recordingVisibleFrame: CGRect(x: -50, y: -20, width: 100, height: 28))
+
+        await harness.startRecording()
+
+        XCTAssertEqual(harness.selection.recordingLayout?.mode, .unavailable)
+        XCTAssertEqual(harness.selection.layoutErrors.count, 1)
+        XCTAssertEqual(harness.coordinator.state, .recording)
+        XCTAssertEqual(harness.coordinator.recordingCommandTitle, "停止录制")
+        XCTAssertEqual(harness.capture.stopCount, 0)
+    }
+
     func testDurationLimitCancelsSuspendedCaptureStartWithinHalfSecond() async {
         let settings = RecordingSettings(
             scale: .one,
@@ -731,7 +743,7 @@ final class RecordingCoordinatorTests: XCTestCase {
 private final class Harness {
     let clock = ManualRecordingClock()
     let permissions: FakePermissions
-    let selection = FakeSelection()
+    let selection: FakeSelection
     let capture: FakeCapture
     let processor = FakeProcessor()
     let encoder: FakeEncoder
@@ -744,7 +756,8 @@ private final class Harness {
     let recorder = EventRecorder()
     let region = CaptureRegion(displayID: 42, globalRect: .init(x: 0, y: 0, width: 100, height: 80), sourceRect: .init(x: 0, y: 0, width: 100, height: 80), logicalPixelSize: .init(width: 100, height: 80), outputPixelSize: .init(width: 100, height: 80), backingScale: 1)
 
-    init(permission: Bool = true, settings: RecordingSettings = .default, capacity: TemporaryFileStore.CapacityPolicy = .canStart, capacityError: Bool = false, encoderFailure: Bool = false, finishFailure: Bool = false, suspendEncoderFinish: Bool = false, suspendCaptureStart: Bool = false, suspendCaptureStop: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseCaptureStartOnStop: Bool = true, captureStartError: Error? = nil, appendFailure: Bool = false, frameDuringStopPTS: TimeInterval? = nil, previewFailure: Bool = false, stopRequestScheduler: (any RecordingStopRequestScheduling)? = nil) throws {
+    init(permission: Bool = true, settings: RecordingSettings = .default, capacity: TemporaryFileStore.CapacityPolicy = .canStart, capacityError: Bool = false, encoderFailure: Bool = false, finishFailure: Bool = false, suspendEncoderFinish: Bool = false, suspendCaptureStart: Bool = false, suspendCaptureStop: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseCaptureStartOnStop: Bool = true, captureStartError: Error? = nil, appendFailure: Bool = false, frameDuringStopPTS: TimeInterval? = nil, previewFailure: Bool = false, stopRequestScheduler: (any RecordingStopRequestScheduling)? = nil, recordingVisibleFrame: CGRect? = nil) throws {
+        selection = FakeSelection(recordingVisibleFrame: recordingVisibleFrame)
         permissions = FakePermissions(granted: permission)
         capture = FakeCapture(events: recorder, suspendStart: suspendCaptureStart, suspendStop: suspendCaptureStop, frameBeforeStartReturnPTS: frameBeforeStartReturnPTS, releaseStartOnStop: releaseCaptureStartOnStop, startError: captureStartError, frameDuringStopPTS: frameDuringStopPTS)
         tempStore = try FakeTempStore(events: recorder, capacity: capacity, capacityError: capacityError)
@@ -807,11 +820,27 @@ private struct FakeError: Error {}
     var statusUpdates: [(elapsed: TimeInterval, remaining: TimeInterval, warning: Bool)] = []
     var stopCallback: (() -> Void)?
     private(set) var stopCallbackCount = 0
+    let recordingVisibleFrame: CGRect?
+    private(set) var recordingLayout: RecordingOverlayPresentation.Output?
+    private(set) var layoutErrors: [String] = []
+    init(recordingVisibleFrame: CGRect? = nil) {
+        self.recordingVisibleFrame = recordingVisibleFrame
+    }
     func show(settings: RecordingSettings, onSettingsChanged: @escaping (RecordingSettings) -> Void, onRecord: @escaping (CaptureRegion, RecordingSettings) -> Void, onCancel: @escaping () -> Void, onDisplayChange: @escaping (DisplayConfigurationChange) -> Void) { showCount += 1; shownSettings.append(settings); settingsCallback = onSettingsChanged; recordCallbacks.append(onRecord); cancelCallback = onCancel; displayCallback = onDisplayChange }
     func dismiss() {}
     func showCountdownVisual(value: Int, targetDisplayID: CGDirectDisplayID) { countdownUpdates.append(value) }
     func updateCountdown(value: Int) { countdownUpdates.append(value) }
-    func showRecordingVisual(onStop: @escaping () -> Void) { stopCallback = onStop }
+    func showRecordingVisual(onStop: @escaping () -> Void) {
+        stopCallback = onStop
+        if let recordingVisibleFrame {
+            recordingLayout = RecordingOverlayPresentation.layout(
+                input: .recording,
+                selectionRect: CGRect(x: 0, y: 0, width: 64, height: 64),
+                visibleFrame: recordingVisibleFrame,
+                errorSink: { [weak self] in self?.layoutErrors.append($0) }
+            )
+        }
+    }
     func updateRecordingStatus(elapsed: TimeInterval, remaining: TimeInterval, isWarning: Bool) { statusUpdates.append((elapsed, remaining, isWarning)) }
     func showStoppingVisual() { events?.values.append("visual-stopping") }
     func changeSettings(_ value: RecordingSettings) { settingsCallback?(value) }

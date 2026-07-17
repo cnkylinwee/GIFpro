@@ -147,6 +147,8 @@ final class DisplayConfigurationMonitor {
     }
 }
 
+extension DisplayConfigurationMonitor: SelectionOverlayDisplayMonitoring {}
+
 extension NSScreen {
     var directDisplayID: CGDirectDisplayID? {
         deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID

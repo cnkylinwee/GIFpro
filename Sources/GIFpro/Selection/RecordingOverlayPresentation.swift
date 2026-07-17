@@ -16,6 +16,14 @@ protocol SelectionOverlayEnvironment {
 }
 
 @MainActor
+protocol SelectionOverlayDisplayMonitoring: AnyObject {
+    func start(
+        onChange: @escaping @MainActor @Sendable (DisplayConfigurationChange) -> Void
+    )
+    func stop()
+}
+
+@MainActor
 struct AppKitSelectionOverlayEnvironment: SelectionOverlayEnvironment {
     var displays: [OverlayDisplayDescriptor] {
         NSScreen.screens.compactMap { screen in
@@ -84,11 +92,13 @@ enum RecordingOverlayPresentation {
     ) -> Output {
         switch input {
         case .statusOnly:
-            let width = min(maximumStatusWidth, max(minimumStatusWidth, selectionRect.width))
-            let size = CGSize(width: min(width, visibleFrame.width), height: min(statusHeight, visibleFrame.height))
-            guard size.width > 0, size.height > 0 else {
+            guard visibleFrame.width >= minimumStatusWidth,
+                  visibleFrame.height >= statusHeight else {
+                errorSink("Recording overlay cannot fit the 100x28 status panel in the visible frame")
                 return Output(statusFrame: nil, stopFrame: nil, mode: .unavailable)
             }
+            let width = min(maximumStatusWidth, max(minimumStatusWidth, selectionRect.width))
+            let size = CGSize(width: min(width, visibleFrame.width), height: statusHeight)
             let origin = positionedOrigin(
                 size: size,
                 centeredOn: selectionRect,

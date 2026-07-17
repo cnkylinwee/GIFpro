@@ -57,7 +57,7 @@ final class SelectionOverlayController {
     }
 
     private let converter: DisplayCoordinateConverter
-    private let displayMonitor: DisplayConfigurationMonitor
+    private let displayMonitor: any SelectionOverlayDisplayMonitoring
     private let environment: any SelectionOverlayEnvironment
     private let imageLoader: any TemplateControlImageLoading
     private let auxiliaryPanelInstallationGate: (RecordingOverlayAuxiliaryPhase) -> Bool
@@ -89,11 +89,12 @@ final class SelectionOverlayController {
         converter: DisplayCoordinateConverter = DisplayCoordinateConverter(),
         imageLoader: (any TemplateControlImageLoading)? = nil,
         environment: (any SelectionOverlayEnvironment)? = nil,
+        displayMonitor: (any SelectionOverlayDisplayMonitoring)? = nil,
         auxiliaryPanelInstallationGate: @escaping (RecordingOverlayAuxiliaryPhase) -> Bool = { _ in true },
         layoutErrorSink: @escaping (String) -> Void = { _ in }
     ) {
         self.converter = converter
-        self.displayMonitor = DisplayConfigurationMonitor()
+        self.displayMonitor = displayMonitor ?? DisplayConfigurationMonitor()
         self.environment = environment ?? AppKitSelectionOverlayEnvironment()
         self.imageLoader = imageLoader ?? TemplateControlImageLoader()
         self.auxiliaryPanelInstallationGate = auxiliaryPanelInstallationGate
@@ -102,7 +103,7 @@ final class SelectionOverlayController {
 
     init(
         converter: DisplayCoordinateConverter,
-        displayMonitor: DisplayConfigurationMonitor,
+        displayMonitor: any SelectionOverlayDisplayMonitoring,
         imageLoader: (any TemplateControlImageLoading)? = nil,
         environment: (any SelectionOverlayEnvironment)? = nil,
         layoutErrorSink: @escaping (String) -> Void = { _ in }
@@ -181,7 +182,6 @@ final class SelectionOverlayController {
 
     func startRecordingVisualState(onStop: @escaping () -> Void) {
         guard lifecycle.snapshot.phase == .countingDown,
-              statusPanel != nil,
               stopPanel == nil,
               let overlay = validOwnerOverlay() else { return }
         var proposedLifecycle = lifecycle
