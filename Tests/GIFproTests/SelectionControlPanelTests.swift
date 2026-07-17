@@ -49,6 +49,21 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertEqual(recordButton?.keyEquivalent, "\r")
     }
 
+    func testRecordingVisualsPassThroughMouseExceptNarrowStopPanel() {
+        XCTAssertTrue(RecordingOverlayMousePolicy.selectionVisualsIgnoreMouseEvents)
+        XCTAssertTrue(RecordingOverlayMousePolicy.statusTextIgnoresMouseEvents)
+        XCTAssertFalse(RecordingOverlayMousePolicy.stopButtonIgnoresMouseEvents)
+
+        let selection = CGRect(x: 100, y: 100, width: 300, height: 200)
+        let layout = RecordingOverlayPanelLayout(
+            selectionRect: selection,
+            visibleFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800)
+        )
+        XCTAssertEqual(layout.stopFrame.size, CGSize(width: 58, height: 30))
+        XCTAssertTrue(selection.contains(layout.stopFrame))
+        XCTAssertLessThan(layout.stopFrame.width * layout.stopFrame.height, selection.width * selection.height / 20)
+    }
+
     private func makePanel() -> SelectionControlPanel {
         SelectionControlPanel(
             contentRect: CGRect(x: 0, y: 0, width: 500, height: 52),

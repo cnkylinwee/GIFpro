@@ -1,5 +1,51 @@
 import AppKit
 
+enum RecordingOverlayMousePolicy {
+    static let selectionVisualsIgnoreMouseEvents = true
+    static let statusTextIgnoresMouseEvents = true
+    static let stopButtonIgnoresMouseEvents = false
+}
+
+struct RecordingOverlayPanelLayout: Equatable {
+    let statusFrame: CGRect
+    let stopFrame: CGRect
+
+    init(selectionRect: CGRect, visibleFrame: CGRect) {
+        let statusSize = CGSize(width: min(220, max(100, selectionRect.width - 70)), height: 28)
+        let stopSize = CGSize(width: 58, height: 30)
+        let preferredY = selectionRect.maxY - 36
+        let y = min(max(preferredY, visibleFrame.minY), visibleFrame.maxY - statusSize.height)
+        let statusX = min(
+            max(selectionRect.minX + 8, visibleFrame.minX),
+            visibleFrame.maxX - statusSize.width
+        )
+        let stopX = min(
+            max(selectionRect.maxX - stopSize.width - 8, visibleFrame.minX),
+            visibleFrame.maxX - stopSize.width
+        )
+        statusFrame = CGRect(origin: CGPoint(x: statusX, y: y), size: statusSize)
+        stopFrame = CGRect(origin: CGPoint(x: stopX, y: y), size: stopSize)
+    }
+}
+
+@MainActor
+final class ClosureActionTarget: NSObject {
+    private let action: () -> Void
+
+    init(action: @escaping () -> Void) { self.action = action }
+
+    @objc func invoke() { action() }
+
+    static func install(on control: NSControl, action: @escaping () -> Void) -> ClosureActionTarget {
+        let target = ClosureActionTarget(action: action)
+        control.action = #selector(invoke)
+        objc_setAssociatedObject(control, &associationKey, target, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        return target
+    }
+}
+
+private nonisolated(unsafe) var associationKey: UInt8 = 0
+
 @MainActor
 final class SelectionOverlayPanel: NSPanel {
     var handlesEscape = true

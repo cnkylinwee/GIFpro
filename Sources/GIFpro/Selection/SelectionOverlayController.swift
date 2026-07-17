@@ -27,6 +27,8 @@ final class SelectionOverlayController {
     private var overlays: [CGDirectDisplayID: Overlay] = [:]
     private var ownerDisplayID: CGDirectDisplayID?
     private var controlPanel: NSPanel?
+    private var statusPanel: NSPanel?
+    private var stopPanel: NSPanel?
     private var settings = RecordingSettings.default
     private var visualState = VisualState.hidden
 
@@ -61,6 +63,10 @@ final class SelectionOverlayController {
         displayMonitor.stop()
         controlPanel?.close()
         controlPanel = nil
+        statusPanel?.close()
+        statusPanel = nil
+        stopPanel?.close()
+        stopPanel = nil
         for overlay in overlays.values {
             overlay.panel.onEscape = nil
             overlay.panel.close()
@@ -75,11 +81,13 @@ final class SelectionOverlayController {
         visualState = .countingDown
         configureStatusOnlyVisualState()
         overlays[targetDisplayID]?.view.showCountdown(value)
+        installStatusPanels(text: "\(value)", onStop: nil)
     }
 
     func updateCountdown(_ value: Int) {
         guard visualState == .countingDown, let ownerDisplayID else { return }
         overlays[ownerDisplayID]?.view.showCountdown(value)
+        updateStatusPanel(text: "\(value)")
     }
 
     func startRecordingVisualState(onStop: @escaping () -> Void) {
@@ -92,6 +100,7 @@ final class SelectionOverlayController {
             isWarning: false,
             onStop: onStop
         )
+        installStatusPanels(text: recordingStatus(elapsed: 0, remaining: 0), onStop: onStop)
     }
 
     func updateRecordingStatus(
@@ -105,12 +114,19 @@ final class SelectionOverlayController {
             remaining: remaining,
             isWarning: isWarning
         )
+        updateStatusPanel(
+            text: recordingStatus(elapsed: elapsed, remaining: remaining),
+            isWarning: isWarning
+        )
     }
 
     func showStoppingVisualState() {
         guard visualState == .recording else { return }
         visualState = .stopping
         overlays[ownerDisplayID ?? 0]?.view.showStopping()
+        stopPanel?.close()
+        stopPanel = nil
+        updateStatusPanel(text: "正在完成…")
     }
 
     private func configureStatusOnlyVisualState() {
@@ -126,9 +142,79 @@ final class SelectionOverlayController {
             overlay.view.isInteractive = false
             overlay.panel.handlesEscape = false
             overlay.panel.onEscape = nil
-            overlay.panel.ignoresMouseEvents = false
+            overlay.panel.ignoresMouseEvents = RecordingOverlayMousePolicy.selectionVisualsIgnoreMouseEvents
             overlay.panel.resignKey()
         }
+    }
+
+    private func installStatusPanels(text: String, onStop: (() -> Void)?) {
+        statusPanel?.close()
+        stopPanel?.close()
+        statusPanel = nil
+        stopPanel = nil
+        guard let ownerDisplayID,
+              let overlay = overlays[ownerDisplayID],
+              let selectionRect = overlay.view.selectionRect else { return }
+        let globalSelection = overlay.panel.convertToScreen(selectionRect)
+        let layout = RecordingOverlayPanelLayout(
+            selectionRect: globalSelection,
+            visibleFrame: overlay.screen.visibleFrame
+        )
+        let label = NSTextField(labelWithString: text)
+        label.alignment = .center
+        label.textColor = .white
+        label.backgroundColor = NSColor.black.withAlphaComponent(0.78)
+        label.drawsBackground = true
+        label.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
+        let status = makeAuxiliaryPanel(frame: layout.statusFrame, contentView: label)
+        status.ignoresMouseEvents = RecordingOverlayMousePolicy.statusTextIgnoresMouseEvents
+        status.orderFrontRegardless()
+        statusPanel = status
+
+        guard let onStop else { return }
+        let button = NSButton(title: "停止", target: nil, action: nil)
+        button.bezelStyle = .rounded
+        button.bezelColor = .systemRed
+        button.contentTintColor = .white
+        button.target = ClosureActionTarget.install(on: button, action: onStop)
+        let stop = makeAuxiliaryPanel(frame: layout.stopFrame, contentView: button)
+        stop.ignoresMouseEvents = RecordingOverlayMousePolicy.stopButtonIgnoresMouseEvents
+        stop.orderFrontRegardless()
+        stopPanel = stop
+    }
+
+    private func updateStatusPanel(text: String, isWarning: Bool = false) {
+        guard let label = statusPanel?.contentView as? NSTextField else { return }
+        label.stringValue = text
+        label.textColor = isWarning ? .systemYellow : .white
+    }
+
+    private func makeAuxiliaryPanel(frame: CGRect, contentView: NSView) -> NSPanel {
+        let panel = NSPanel(
+            contentRect: frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        contentView.frame = CGRect(origin: .zero, size: frame.size)
+        contentView.autoresizingMask = [.width, .height]
+        panel.contentView = contentView
+        return panel
+    }
+
+    private func recordingStatus(elapsed: TimeInterval, remaining: TimeInterval) -> String {
+        String(
+            format: "%02d:%02d  剩余 %02d:%02d",
+            Int(elapsed) / 60,
+            Int(elapsed) % 60,
+            Int(remaining) / 60,
+            Int(remaining) % 60
+        )
     }
 
     private func installOverlay(for screen: NSScreen, displayID: CGDirectDisplayID) {
