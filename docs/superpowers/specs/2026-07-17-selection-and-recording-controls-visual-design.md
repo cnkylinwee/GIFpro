@@ -1,11 +1,11 @@
 # GIFpro 选框与录制控件视觉改版
 
 日期：2026-07-17  
-状态：已获用户口头批准，待书面规格复审
+状态：已获用户口头批准，规格复审修订中
 
 ## 1. 目标
 
-本次改版只调整框选和录制控件的视觉与交互表现：
+本次改版只调整框选和录制控件：
 
 1. 框选边框采用用户提供的 `边框.png` 风格，并继续支持八方向拖动缩放。
 2. “开始录制”改用用户提供的 `录制按钮.png` 图形。
@@ -13,81 +13,116 @@
 
 改版保持现有录制流程、设置、快捷键、屏幕捕获、GIF 编码和保存逻辑不变。
 
-## 2. 视觉方案
+## 2. 视觉与交互
 
 ### 2.1 自动着色
 
-三个视觉元素都适配 macOS 当前外观：
-
-- 录制与停止 PNG 作为 `NSImage.isTemplate = true` 的模板图使用。控件通过系统 tint 着色，不固定为黑色。
-- 框选边框使用 AppKit 矢量路径重绘，不直接拉伸 `边框.png`。路径颜色取系统控件强调色，并随可用外观更新。
-- 录制进行中的红色边框保持现有 `systemRed` 语义，不改为框选强调色。
+- 录制与停止 PNG 作为 `NSImage.isTemplate = true` 的模板图使用。录制按钮取动态 `NSColor.controlAccentColor`；停止按钮取动态 `NSColor.systemRed`。
+- 两个按钮都使用无边框、image-only、proportional scaling 的 `NSButton`。系统高亮状态将图形降至 75% alpha；禁用状态使用 `NSColor.disabledControlTextColor`。按钮的 `effectiveAppearance` 改变时重新解析动态颜色并重绘。
+- 框选边框使用 AppKit 矢量路径重绘，不直接拉伸 `边框.png`。路径颜色取动态 `NSColor.controlAccentColor`。`effectiveAppearance` 或系统强调色改变时，overlay 立即重绘。
+- 录制进行中的红色边框保持现有 `systemRed` 语义。
 
 ### 2.2 框选边框
 
-`SelectionOverlayView` 按附件轮廓绘制选区边线和八个可见控制点。控制点位于四角和四边中点。边线与控制点保持固定 point 尺寸，不随选区宽高拉伸。
+`SelectionOverlayView` 绘制 2 point 选区边线和八个控制点。控制点位于四角和四边中点，使用 10×10 point 圆角方形：填充色为窗口背景色，2 point 描边取系统强调色，圆角半径为 2 point。位置允许 0.5 point 的像素对齐误差。边线与控制点保持固定 point 尺寸，不随选区宽高拉伸。
 
-每个控制点保留大于其可见图形的透明命中区域。用户可以拖动四边、四角调整选区，也可以拖动选区内部移动选区。现有最小尺寸、单显示器约束、坐标转换和光标反馈继续生效。
+每个控制点使用 16×16 point 透明命中区域。命中优先级为控制点、其他区域。用户可以拖动四边、四角调整选区；点击或拖动选区内部的非控制点区域沿用现有行为，开始绘制新选区。本次不增加移动整个选区的功能。现有 64×64 point 最小尺寸、单显示器约束、坐标转换和光标反馈继续生效。
 
-框选阶段的全屏 panel 接收鼠标事件。倒计时和录制阶段继续启用鼠标穿透，避免遮挡底层应用。
+框选阶段的全屏 panel 接收鼠标。倒计时和录制阶段继续穿透鼠标，避免遮挡底层应用。
 
 ### 2.3 录制按钮
 
-设置控制条中的录制操作只显示 `录制按钮.png`，不再绘制“录制”文字。图形按比例缩放到固定视觉尺寸，按钮提供至少 44×44 point 的点击区域。
+设置控制条中的录制操作只显示 `录制按钮.png`，title 为空。图形按比例缩放到 24×24 point，按钮 frame 固定为 44×44 point。
 
-按钮保留以下非视觉信息：
+按钮保留：
 
-- 辅助功能标签：“开始录制”
-- Tooltip：“开始录制”
-- 原有启用状态与点击回调
+- 辅助功能 role `button`、标签“开始录制”和 press action。
+- Tooltip“开始录制”。
+- 原有启用状态和点击回调。
+- Return (`\r`) key equivalent、键盘焦点和键盘激活。
 
 ### 2.4 停止按钮
 
 录制中的独立停止 panel 只显示 `停止按钮.png`。代码不再创建“停止”标题，也不在 `SelectionOverlayView` 中重复绘制该文字或按钮。
 
-停止按钮提供至少 44×44 point 的点击区域，并保留辅助功能标签和 Tooltip“停止录制”。只有这个窄 panel 接收鼠标；录制边框和状态 panel 继续穿透鼠标。
+停止图形按比例缩放到 24×24 point，按钮和 panel 固定为 44×44 point。按钮保留辅助功能 role `button`、标签“停止录制”、press action 和 Tooltip“停止录制”。只有这个窄 panel 接收鼠标；录制边框和状态 panel 继续穿透鼠标。
 
-停止开始后，按钮沿用现有防重复触发与收尾状态，不能创建第二次停止操作。
+停止按钮使用会话代次和 one-shot gate。第一次有效 mouse-up 先禁用按钮并关闭停止 panel，再调用一次 UI callback。后续双击、迟到 action 或旧会话 action 都无效。`RecordingCoordinator` 继续保证底层 capture stop 只执行一次。
+
+### 2.5 状态与 panel 生命周期
+
+| 状态 | owner overlay | 设置 panel | 状态 panel | 停止 panel | 鼠标策略 |
+| --- | --- | --- | --- | --- | --- |
+| selecting | 存在 | 选区完成后存在 | 无 | 无 | overlay 和设置 panel 接收鼠标 |
+| countingDown | 存在 | 无 | 存在 | 无 | overlay、状态 panel 均穿透；底层全部可操作 |
+| recording | 存在 | 无 | 存在 | 存在 | overlay、状态 panel 穿透；只有停止按钮接收鼠标 |
+| stopping/finalizing | 存在 | 无 | 存在 | 立即关闭 | overlay、状态 panel 穿透；底层全部可操作 |
+| hidden/idle | 全部关闭 | 无 | 无 | 无 | 不保留 window、target 或 callback |
+
+进入倒计时后关闭非 owner display 的 overlay。`dismiss`、显示器失效、取消和会话结束都关闭所有辅助 panel，并使旧代次 callback 失效。
+
+### 2.6 状态与停止 panel 布局
+
+状态 panel 高 28 point，期望宽度限制在 100...220 point。停止 panel 为 44×44 point，两者间距 8 point。布局器必须让两个 frame 不相交，并让两个 frame 完全位于目标屏幕 `visibleFrame` 内。
+
+布局按以下顺序选择：
+
+1. 如果 `visibleFrame` 可容纳横向组合，状态在左、停止在右。组合优先放在选区下方 8 point；下方不足则放在上方 8 point；上下都不足则靠近选区上边缘并夹取到 `visibleFrame`。
+2. 如果横向组合无法容纳，改为纵向排列，状态在上、停止在下，间距 8 point；状态宽度最多缩至 `visibleFrame.width`。组合仍按下方、上方、夹取的顺序放置。
+3. 倒计时和 stopping 没有停止 panel。状态 panel 单独居中靠近选区，并夹取到 `visibleFrame`。
+
+布局测试使用 64×64 最小选区、四个屏幕角、贴四边和普通居中选区。每个用例都断言 panel 不相交、停止 frame 可完整点击、所有 frame 位于 `visibleFrame`。
 
 ## 3. 资源与体积
 
-实现将原始 `录制按钮.png` 和 `停止按钮.png` 复制到 App 的资源目录，并使用稳定的英文资源名。`边框.png` 只作为视觉参考，不进入发布包。
+实现从用户已提供的源文件复制资源：
 
-构建脚本必须把两张按钮资源复制到 `.app`。Release 检查仍要求 App 小于 10 MB、仅包含 arm64 和系统动态库。两张原始 PNG 合计约 81 KB，不改变轻量化目标。
+| 源文件 | 仓库目标 | App bundle 目标 |
+| --- | --- | --- |
+| `/Users/wdychn/Downloads/录制按钮.png` | `Resources/RecordButton.png` | `Contents/Resources/RecordButton.png` |
+| `/Users/wdychn/Downloads/停止按钮.png` | `Resources/StopButton.png` | `Contents/Resources/StopButton.png` |
+| `/Users/wdychn/Downloads/边框.png` | `docs/assets/SelectionBorderReference.png` | 不复制到 App |
 
-如果 AppKit 无法直接对模板 PNG 应用预期 tint，实现可以在加载后生成模板 `NSImage` 副本，但不得修改用户的原始附件。
+生产加载器使用 `Bundle.main.url(forResource: "RecordButton", withExtension: "png")` 和对应的 `StopButton` 精确名称，不使用泛名称 `NSImage(named:)`。测试向加载器注入资源目录，并复用同一组资源名常量。
+
+构建脚本把两张按钮资源复制到 `.app`，并继续执行小于 10 MB、arm64-only、系统动态库和签名门禁。两张原始 PNG 合计约 81 KB。加载器复制 `NSImage` 后设置 `isTemplate = true`，不得修改用户的原始附件。
 
 ## 4. 组件边界
 
 - `SelectionOverlayView`：绘制矢量框选边框、控制点和录制红框；处理八方向命中与拖动。
-- `SelectionControlsView`：显示模板化录制图标，提供点击、Tooltip 和辅助功能语义。
-- `SelectionOverlayController`：创建独立的模板化停止按钮 panel，维护鼠标穿透和 panel 生命周期。
-- 资源加载器或窄 helper：按名称加载模板 PNG；资源缺失时使用明确的开发断言，并在生产构建中提供可点击的安全回退图形。
+- `SelectionControlsView`：显示模板化录制图标，提供鼠标、键盘、Tooltip 和辅助功能语义。
+- `SelectionOverlayController`：创建独立停止按钮 panel，维护布局、one-shot gate、鼠标穿透和 panel 生命周期。
+- 资源加载器：按精确名称加载模板 PNG；支持注入资源目录，以便测试缺失资源。
 
-本次修改不把图像资源或视觉状态引入 `RecordingCoordinator`。领域状态只通过现有 overlay 接口驱动 UI。
+图像资源和视觉状态不进入 `RecordingCoordinator`。领域状态只通过现有 overlay 接口驱动 UI。
 
 ## 5. 错误与回退
 
-- Release 构建必须验证两张按钮资源存在。
-- 如果运行时资源加载失败，按钮仍保留点击区域、辅助功能标签和动作，使用简单的系统回退图形，不能变成不可操作的空白控件。
+- Debug 和 Release 都不因资源缺失崩溃。加载器记录错误，并返回具体回退图形：录制使用 `record.circle`，停止使用 `stop.circle.fill`。如果系统 symbol 也不可用，则用矢量圆环加圆点、圆环加方块绘制 24×24 point 模板图。
+- 回退图形继续使用规定的 tint、44×44 frame、Tooltip、辅助功能 role、label、action 和原有 callback。
+- Release 构建验证源资源、App bundle 资源及字节一致；缺失或复制不一致时构建失败。运行时回退用于开发启动方式和受损 bundle，不放宽发布门禁。
 - 边框矢量绘制不依赖外部文件，因此框选始终可用。
 
 ## 6. 测试与验收
 
 自动化测试覆盖：
 
-- 八个控制点的布局、命中区域和拖动结果。
-- 框选边框使用系统强调色，录制边框仍为红色。
-- 录制和停止按钮无文字标题，加载模板图并具有正确辅助功能标签。
-- 两个按钮的点击区域至少为 44×44 point。
-- 框选阶段接收鼠标；倒计时和录制阶段只有停止 panel 接收鼠标。
-- 停止按钮只触发一次停止动作。
-- Debug 与 Release 包含两张 PNG；arm64、签名、动态库和 10 MB 门禁继续通过。
+- 八个控制点的布局和拖动结果。
+- 2 point 边框、10×10 圆角控制点、16×16 命中区域及控制点优先命中；选区内部非控制点开始新选区。
+- 框选边框使用系统强调色，录制边框仍为红色；浅色、深色和强调色变化触发重绘。
+- 录制和停止按钮 title 为空，使用精确模板资源、规定 tint、24×24 图形和 44×44 frame。
+- 两个按钮具有 button role、正确 label、press action、Tooltip 和可执行 callback；录制按钮保留 Return 键盘激活与 enabled 状态。
+- 缺失资源的注入测试验证具体 symbol/矢量回退，按钮仍可点击且辅助功能语义完整。
+- 参数化布局测试覆盖最小选区、四角、四边和居中选区；状态与停止 panel 不相交且都在 `visibleFrame` 内。
+- 状态表中的每个阶段都验证 panel 存在性、鼠标穿透、关闭和旧 callback 失效。
+- 快速双击停止时 `callbackCount == 1` 且下游 `stopCount == 1`。
+- Debug 与 Release 包含两张 PNG；Release 还验证源与 bundle 字节一致，arm64、签名、动态库和 10 MB 门禁继续通过。
 
-人工验收覆盖浅色与深色模式，并在不同大小的选区上检查边框无拉伸、控制点清晰、八方向缩放正确。录制时验证停止图形无文字重叠，选区内外仍可操作底层应用。
+人工验收覆盖浅色与深色模式，并在不同大小的选区上检查边框无拉伸、控制点清晰、八方向缩放正确。录制时验证停止图形无文字重叠，除停止按钮外的区域都能操作底层应用。
 
 ## 7. 不在本次范围
 
+- 不增加移动整个选区的功能。
 - 不修改菜单栏图标。
 - 不改变倒计时、录制状态文字或保存预览界面。
 - 不改变录制红框颜色。
