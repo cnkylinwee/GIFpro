@@ -4,27 +4,27 @@
 
 **Goal:** Replace GIFpro's selection handles, record control, and recording stop control with the approved scalable border and automatically tinted attachment styles.
 
-**Architecture:** Keep geometry and visual code inside the existing Selection module. Add one injectable template-image loader, make the selection border vector-based, and keep recording controls in narrow auxiliary panels so the full-screen overlay remains mouse-transparent. The build script imports only repository resources into the App bundle and verifies byte identity.
+**Architecture:** Keep geometry and presentation inside the Selection module. Add an injectable ImageIO-validating resource loader and a shared template-button subclass, draw the selection border as vectors, and make auxiliary-panel layout and lifecycle testable without real displays. The hand-built App bundle copies only committed repository assets and verifies them before signing.
 
-**Tech Stack:** Swift 6-compatible AppKit, XCTest, ImageIO-backed PNG validation, POSIX shell release packaging, native macOS template images.
+**Tech Stack:** Swift/AppKit, ImageIO, XCTest, POSIX shell, native macOS template images.
 
 ---
 
 ## File map
 
-- Create `Sources/GIFpro/Selection/TemplateControlImageLoader.swift`: exact resource names, template conversion, dynamic fallback images, and injectable directory loading.
-- Modify `Sources/GIFpro/Selection/SelectionOverlayView.swift`: vector selection style constants, handle layout/hit testing, image-only record button, and removal of inline stop drawing.
-- Modify `Sources/GIFpro/Selection/SelectionOverlayController.swift`: collision-free auxiliary layout, template stop button, one-shot action generation, and panel cleanup.
-- Modify `Scripts/build-app.sh`: copy and compare the two repository PNG resources.
-- Create `Resources/RecordButton.png` and `Resources/StopButton.png`: one-time imports from the user attachments.
-- Create `docs/assets/SelectionBorderReference.png`: committed visual reference only; never copied into the App.
-- Create `Tests/GIFproTests/TemplateControlImageLoaderTests.swift`: resource, template, and fallback tests.
-- Modify `Tests/GIFproTests/SelectionControlPanelTests.swift`: button, accessibility, keyboard, panel layout, mouse policy, and one-shot tests.
-- Create `Tests/GIFproTests/SelectionOverlayStyleTests.swift`: vector constants, eight handle frames, expanded hit targets, and redraw state tests.
-- Modify `Tests/ScriptTests/BuildAppReleaseChecksTests.sh`: bundle resource and byte-identity checks.
-- Modify `docs/manual-test-checklist.md` and `docs/release-verification.md`: record the new local visual/build checks without changing existing external PENDING gates.
+- Create `Sources/GIFpro/Selection/TemplateControlImageLoader.swift`: asset constants, resource locators, ImageIO validation, symbol provider, and vector fallback.
+- Create `Sources/GIFpro/Selection/TemplateControlButton.swift`: fixed sizing, tint states, accessibility-friendly image-only button behavior.
+- Create `Sources/GIFpro/Selection/RecordingOverlayPresentation.swift`: pure layout modes, lifecycle policy/snapshot, one-shot generation target, and test seams.
+- Modify `Sources/GIFpro/Selection/SelectionOverlayView.swift`: vector selection border/handles and image-only record button; remove all inline status/stop UI.
+- Modify `Sources/GIFpro/Selection/SelectionOverlayController.swift`: injected loader/environment, status/stop panels, generation invalidation, and lifecycle snapshot.
+- Create `Scripts/validate-control-assets.sh`: fail-closed PNG decoding checks shared by packaging tests and the build.
+- Modify `Scripts/build-app.sh`: copy repository PNGs, compare bytes, then preserve all current release gates.
+- Create `Resources/RecordButton.png`, `Resources/StopButton.png`, and `docs/assets/SelectionBorderReference.png` from the three approved attachments.
+- Create `Tests/GIFproTests/TemplateControlImageLoaderTests.swift` and `Tests/GIFproTests/SelectionOverlayStyleTests.swift`.
+- Modify `Tests/GIFproTests/SelectionControlPanelTests.swift`, `Tests/GIFproTests/RecordingCoordinatorTests.swift`, `Tests/GIFproTests/MenuBarContentTests.swift`, and `Tests/ScriptTests/BuildAppReleaseChecksTests.sh`.
+- Modify `docs/manual-test-checklist.md` and `docs/release-verification.md` with only checks actually run.
 
-### Task 1: Import resources and add the template-image loader
+### Task 1: Import and validate the approved assets
 
 **Files:**
 - Create: `Resources/RecordButton.png`
@@ -33,9 +33,7 @@
 - Create: `Sources/GIFpro/Selection/TemplateControlImageLoader.swift`
 - Create: `Tests/GIFproTests/TemplateControlImageLoaderTests.swift`
 
-- [ ] **Step 1: Import the approved attachments once**
-
-Copy without conversion so the committed bytes match the attachments:
+- [ ] **Step 1: Import the attachments once and verify exact bytes**
 
 ```bash
 ditto /Users/wdychn/Downloads/录制按钮.png Resources/RecordButton.png
@@ -44,339 +42,295 @@ mkdir -p docs/assets
 ditto /Users/wdychn/Downloads/边框.png docs/assets/SelectionBorderReference.png
 cmp /Users/wdychn/Downloads/录制按钮.png Resources/RecordButton.png
 cmp /Users/wdychn/Downloads/停止按钮.png Resources/StopButton.png
+cmp /Users/wdychn/Downloads/边框.png docs/assets/SelectionBorderReference.png
 ```
 
-Expected: every command exits 0. Downloads are never referenced after this step.
+Expected: all commands exit 0. No later build or test may read Downloads.
 
 - [ ] **Step 2: Write failing loader tests**
 
-Test these public-internal contracts:
+Define tests around protocols before the concrete loader:
 
 ```swift
-func testRepositoryRecordAndStopImagesLoadAsTemplates() throws {
-    let loader = TemplateControlImageLoader(resourceDirectory: repositoryResources)
-    let record = try XCTUnwrap(loader.image(for: .record))
-    let stop = try XCTUnwrap(loader.image(for: .stop))
-    XCTAssertTrue(record.isTemplate)
-    XCTAssertTrue(stop.isTemplate)
+protocol TemplateControlImageLoading {
+    func load(_ asset: TemplateControlImageAsset) -> LoadedTemplateImage
 }
 
-func testMissingResourcesReturnNamedFallbacks() {
-    let loader = TemplateControlImageLoader(resourceDirectory: emptyDirectory)
-    XCTAssertEqual(loader.load(.record).source, .systemSymbol("record.circle"))
-    XCTAssertEqual(loader.load(.stop).source, .systemSymbol("stop.circle.fill"))
+protocol TemplateControlImageResourceLocating {
+    func url(for asset: TemplateControlImageAsset) -> URL?
+}
+
+protocol TemplateControlSymbolProviding {
+    func image(named symbolName: String) -> NSImage?
 }
 ```
 
-Also assert exact filenames `RecordButton.png` and `StopButton.png`; reject a corrupt non-image file; keep the returned image 24×24 point and template-enabled.
+Test exact names `RecordButton.png` and `StopButton.png`; production `BundleResourceLocator` must call `bundle.url(forResource:withExtension:)`; `DirectoryResourceLocator` must append the same constants. Test a valid repository PNG, missing file, corrupt bytes, named-symbol fallback, and a forced nil symbol provider that reaches vector fallback. Assert each result is 24×24 and `isTemplate == true`.
 
-- [ ] **Step 3: Run the loader tests to verify RED**
-
-Run:
+- [ ] **Step 3: Run tests and verify RED**
 
 ```bash
 swift test --filter TemplateControlImageLoaderTests
 ```
 
-Expected: FAIL because the loader types do not exist.
+Expected: FAIL because the protocols and loader do not exist.
 
-- [ ] **Step 4: Implement the narrow loader**
+- [ ] **Step 4: Implement exact lookup, decoding, and fallback**
 
-Use one enum and one result type so production and tests share exact names:
+Use `CGImageSourceCreateWithURL` plus `CGImageSourceCreateImageAtIndex` to reject corrupt or undecodable PNGs before creating the `NSImage`. Return a copied 24×24 template image. Missing/corrupt resources log once, then try `record.circle` or `stop.circle.fill`; a missing symbol uses a vector circle+dot or circle+square. Debug and Release both remain usable.
+
+Production construction uses:
 
 ```swift
-enum TemplateControlImageAsset: CaseIterable {
-    case record, stop
-
-    var resourceName: String { self == .record ? "RecordButton" : "StopButton" }
-    var fallbackSymbolName: String { self == .record ? "record.circle" : "stop.circle.fill" }
-}
-
-struct LoadedTemplateImage {
-    enum Source: Equatable { case bundlePNG, systemSymbol(String), vectorFallback }
-    let image: NSImage
-    let source: Source
-}
+TemplateControlImageLoader(
+    locator: BundleResourceLocator(bundle: .main),
+    symbols: AppKitTemplateControlSymbolProvider()
+)
 ```
 
-`TemplateControlImageLoader` accepts either `Bundle.main.resourceURL` or an injected directory URL. It loads by exact URL, copies the image, sets `isTemplate = true`, and sets size to 24×24. Missing/corrupt PNGs log an error, then use the named system symbol; if that also fails, draw a 24×24 vector record/stop fallback. No branch traps in Debug.
-
-- [ ] **Step 5: Run loader and full selection tests**
-
-Run:
+- [ ] **Step 5: Run focused tests and commit**
 
 ```bash
 swift test --filter TemplateControlImageLoaderTests
-swift test --filter SelectionControlPanelTests
-```
-
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
 git add Resources/RecordButton.png Resources/StopButton.png docs/assets/SelectionBorderReference.png Sources/GIFpro/Selection/TemplateControlImageLoader.swift Tests/GIFproTests/TemplateControlImageLoaderTests.swift
-git commit -m "feat: add template recording control assets"
+git commit -m "feat: add validated recording control assets"
 ```
 
-### Task 2: Recreate the selection border and handles as vectors
+Expected: loader tests PASS; commit succeeds.
+
+### Task 2: Draw the scalable selection border and remove duplicate inline UI
 
 **Files:**
 - Modify: `Sources/GIFpro/Selection/SelectionOverlayView.swift`
+- Modify: `Sources/GIFpro/Selection/SelectionOverlayController.swift`
 - Create: `Tests/GIFproTests/SelectionOverlayStyleTests.swift`
 - Modify: `Tests/GIFproTests/SelectionControlPanelTests.swift`
 
-- [ ] **Step 1: Write failing style and hit-target tests**
+- [ ] **Step 1: Write failing style, hit, and redraw tests**
 
-Introduce testable geometry without exposing mutable view state:
+Create a pure configuration that tests can inspect:
 
 ```swift
-XCTAssertEqual(SelectionOverlayStyle.borderWidth, 2)
-XCTAssertEqual(SelectionOverlayStyle.visibleHandleSize, CGSize(width: 10, height: 10))
-XCTAssertEqual(SelectionOverlayStyle.handleHitSize, CGSize(width: 16, height: 16))
-
-for handle in ResizeHandle.allCases {
-    XCTAssertEqual(style.handleFrame(for: handle, in: selection).size, .init(width: 10, height: 10))
-    XCTAssertEqual(style.handleHitFrame(for: handle, in: selection).size, .init(width: 16, height: 16))
+struct SelectionOverlayStyle: Equatable {
+    static let borderWidth: CGFloat = 2
+    static let visibleHandleSize = CGSize(width: 10, height: 10)
+    static let handleHitSize = CGSize(width: 16, height: 16)
+    static let handleCornerRadius: CGFloat = 2
+    let borderRole: BorderRole // .selectionAccent or .recordingRed
+    let handleFillRole: HandleFillRole // .windowBackground
 }
 ```
 
-Send synthetic mouse events at every handle center and just inside the expanded hit edge. Assert the existing resize result. Send an event inside the selection away from handles and assert it begins a new selection rather than moving the old selection.
+Assert all eight visible and hit frames, corner-before-edge priority, 2 point stroke, radius 2, and window-background fill. Synthetic mouse events at every handle center and hit-edge must resize. An interior non-handle drag must start a new selection, never move it. Test `viewDidChangeEffectiveAppearance()` and `NSColor.systemColorsDidChangeNotification` through an injectable redraw observer; both set `needsDisplay`. Test selecting resolves accent role and recording resolves red role in light and dark appearances.
 
-- [ ] **Step 2: Run the tests to verify RED**
-
-Run:
+- [ ] **Step 2: Run and verify RED**
 
 ```bash
 swift test --filter SelectionOverlayStyleTests
 ```
 
-Expected: FAIL because `SelectionOverlayStyle` and testable handle geometry do not exist.
+Expected: FAIL because the style and redraw observer do not exist.
 
-- [ ] **Step 3: Implement the vector style**
+- [ ] **Step 3: Implement vector drawing and color invalidation**
 
-Add immutable constants and pure frame helpers. In `draw(_:)`:
+Use 2 point accent border plus 10×10 rounded-square handles in selecting. Use 16×16 hit frames. When handles are hidden, draw only the existing 2 point `systemRed` recording border. Override `viewDidChangeEffectiveAppearance()` and observe `NSColor.systemColorsDidChangeNotification`; remove the observer on deinit.
 
-- Use `NSColor.controlAccentColor` and a 2 point border while `showsHandles == true`.
-- Draw each 10×10 handle as a rounded rectangle with radius 2, window-background fill, 2 point accent stroke.
-- Use `NSColor.systemRed` for the recording border when handles are hidden.
-- Expand only hit testing to 16×16; keep the visible shape 10×10.
-- Preserve handle-first hit priority and the existing new-selection behavior elsewhere.
-- Override appearance-change notification to set `needsDisplay = true`.
+Delete the duplicate inline UI from `SelectionOverlayView`:
 
-Remove inline stop-control hit testing and drawing from this full-screen view. The independent stop panel becomes the only stop UI.
+- `onStop`, `statusText`, `statusIsWarning`, `showsStopControl`;
+- inline stop hit testing;
+- `showCountdown`, `showRecording`, `updateRecordingStatus`, `showStopping`;
+- `drawStatus`, `statusRect`, and `stopControlRect`.
 
-- [ ] **Step 4: Run style, geometry, and coordinate tests**
+Delete the corresponding controller calls. The separate status panel becomes the only countdown/recording/stopping text; the separate stop panel becomes the only stop control. Replace `testOverlayStatusMovesFromCountdownToRecordingAndStopping` with auxiliary-panel lifecycle assertions.
 
-Run:
+- [ ] **Step 4: Run focused regression tests and commit**
 
 ```bash
 swift test --filter SelectionOverlayStyleTests
+swift test --filter SelectionControlPanelTests
 swift test --filter CaptureRegionTests
 swift test --filter DisplayCoordinateConverterTests
-```
-
-Expected: PASS with all eight directions unchanged.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add Sources/GIFpro/Selection/SelectionOverlayView.swift Tests/GIFproTests/SelectionOverlayStyleTests.swift Tests/GIFproTests/SelectionControlPanelTests.swift
+git add Sources/GIFpro/Selection/SelectionOverlayView.swift Sources/GIFpro/Selection/SelectionOverlayController.swift Tests/GIFproTests/SelectionOverlayStyleTests.swift Tests/GIFproTests/SelectionControlPanelTests.swift
 git commit -m "feat: draw scalable selection handles"
 ```
 
-### Task 3: Replace the record text button with the template image
+Expected: all focused tests PASS.
+
+### Task 3: Add a shared template button and replace Record
 
 **Files:**
+- Create: `Sources/GIFpro/Selection/TemplateControlButton.swift`
 - Modify: `Sources/GIFpro/Selection/SelectionOverlayView.swift`
 - Modify: `Tests/GIFproTests/SelectionControlPanelTests.swift`
 
-- [ ] **Step 1: Write failing record-button tests**
+- [ ] **Step 1: Write failing shared-button state tests**
 
-Inject `TemplateControlImageLoading` into `SelectionControlsView`. Locate the record button through a stable accessibility identifier, not its title. Assert:
+Test a `TemplateControlButton` with injected image and semantic tint (`.accent` or `.destructive`). It must install explicit width/height constraints of 44, use a 24×24 image, `.imageOnly`, `.scaleProportionallyDown`, empty title, and borderless style. Inspect a testable `resolvedVisualState`:
 
-```swift
-XCTAssertEqual(button.title, "")
-XCTAssertEqual(button.frame.size, CGSize(width: 44, height: 44))
-XCTAssertEqual(button.image?.size, CGSize(width: 24, height: 24))
-XCTAssertEqual(button.contentTintColor, .controlAccentColor)
-XCTAssertEqual(button.keyEquivalent, "\r")
-XCTAssertEqual(button.toolTip, "开始录制")
-XCTAssertEqual(button.accessibilityLabel(), "开始录制")
-```
+- normal: dynamic accent or red at alpha 1.0;
+- highlighted: the same semantic color at alpha 0.75;
+- disabled: `disabledControlTextColor`;
+- light/dark `effectiveAppearance`: semantic colors resolve again and request redraw.
 
-Verify enabled/disabled tint, keyboard invocation, press action, and fallback-loader invocation.
+Do not assume a stock borderless `NSButton` supplies the 75% highlight.
 
-- [ ] **Step 2: Run the control tests to verify RED**
-
-Run:
+- [ ] **Step 2: Run and verify RED**
 
 ```bash
 swift test --filter SelectionControlPanelTests
 ```
 
-Expected: FAIL because the current button title is `Record` and has no image contract.
+Expected: FAIL because the shared button does not exist and Record still has a title.
 
-- [ ] **Step 3: Implement the image-only record button**
+- [ ] **Step 3: Implement `TemplateControlButton`**
 
-Create a 44×44 borderless `NSButton`, assign the 24×24 template image, proportional scaling, dynamic accent tint, identifier, Tooltip, accessibility role/label, target/action, and Return key equivalent. Keep the existing `recordPressed` flow. Update tint when enabled state or effective appearance changes.
+Centralize sizing, image scaling, `highlight(_:)`, `isEnabled`, and `viewDidChangeEffectiveAppearance()`. Reapply `contentTintColor` from the semantic state and expose only immutable test snapshots. Keep AppKit's button role and normal target/action path.
 
-- [ ] **Step 4: Run control and coordinator tests**
+- [ ] **Step 4: Replace Record with an injected template control**
 
-Run:
+Inject `TemplateControlImageLoading` into `SelectionControlsView`. Create a `.record` `TemplateControlButton`, accessibility identifier `gifpro.record`, empty title, Tooltip/label “开始录制”, press action, and Return key equivalent. Keep the existing `recordPressed` callback and enabled behavior. Because the stack uses Auto Layout, rely on the button's explicit 44×44 constraints rather than setting frame only.
+
+- [ ] **Step 5: Run focused tests and commit**
 
 ```bash
 swift test --filter SelectionControlPanelTests
 swift test --filter RecordingCoordinatorTests
-```
-
-Expected: PASS; record activation still enters countdown.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add Sources/GIFpro/Selection/SelectionOverlayView.swift Tests/GIFproTests/SelectionControlPanelTests.swift
+git add Sources/GIFpro/Selection/TemplateControlButton.swift Sources/GIFpro/Selection/SelectionOverlayView.swift Tests/GIFproTests/SelectionControlPanelTests.swift
 git commit -m "feat: use the template record control"
 ```
 
-### Task 4: Build the collision-free one-shot stop panel
+Expected: Record has no title, all visual states pass, Return still starts countdown.
+
+### Task 4: Build deterministic panel layout, lifecycle, and one-shot Stop
 
 **Files:**
+- Create: `Sources/GIFpro/Selection/RecordingOverlayPresentation.swift`
 - Modify: `Sources/GIFpro/Selection/SelectionOverlayController.swift`
-- Modify: `Sources/GIFpro/Selection/SelectionOverlayView.swift`
 - Modify: `Tests/GIFproTests/SelectionControlPanelTests.swift`
+- Modify: `Tests/GIFproTests/RecordingCoordinatorTests.swift`
+- Modify: `Tests/GIFproTests/MenuBarContentTests.swift`
 
-- [ ] **Step 1: Write failing layout boundary tests**
+- [ ] **Step 1: Write failing pure layout tests**
 
-Parameterize selections at the center, four edges, four corners, and 64×64 minimum size. Cover visible frames exactly 152×44, 44×80, 140×60, and 40×40. Assert:
+The layout input explicitly distinguishes `.statusOnly` and `.recording`. The output contains optional frames plus one mode: `statusOnly`, `horizontal`, `vertical`, `stopOnly`, or `unavailable`.
 
-- horizontal or vertical status/stop frames never intersect;
-- every displayed frame is inside `visibleFrame`;
-- 140×60 uses stop-only mode with a full 44×44 stop frame;
-- 40×40 reports the defensive error mode and does not create a clipped stop panel.
+Use exact expected frames for negative-origin visible frames, center, four edges, four corners, 64×64 selections, and the thresholds 152×44, 44×80, 140×60, and 40×40. Assert below/above/clamp order. `140×60` must be stop-only. `<44×44` must emit one injected error and return unavailable. For unavailable recording layout, assert `MenuBarPresentation` still exposes “停止录制”.
 
-- [ ] **Step 2: Write failing one-shot and lifecycle tests**
+- [ ] **Step 2: Write failing lifecycle and generation tests**
 
-Use an injectable action target or harness. Invoke mouse/action twice, accessibility press twice, and mixed mouse then accessibility activation. Assert `callbackCount == 1`. Start a replacement recording and invoke the old target; assert the new callback count stays zero. Verify the lifecycle table for selecting, countdown, recording, stopping, and dismiss.
+Create a pure `RecordingOverlayLifecycle` with state (`hidden`, `selecting`, `countingDown`, `recording`, `stopping`) and an internal snapshot describing owner/non-owner overlays, control/status/stop panels, `ignoresMouseEvents`, and current generation. Controller methods update this model before applying window commands.
 
-- [ ] **Step 3: Run the panel tests to verify RED**
+Test every transition, non-owner closure, display invalidation, dismiss/cancel, and replacement recording. `OneShotActionTarget` stores both a monotonic generation and `fired`; it verifies the controller's current generation before firing. Exercise real `NSButton.performClick(nil)`, `accessibilityPerformPress()`, repeated accessibility presses, mixed mouse/action then accessibility, and a retained stale target. Stop remains nonactivating and never becomes key.
 
-Run:
+Update the recording fake to retain `onStop`. Trigger it repeatedly and assert `FakeCapture.stopCount == 1`, proving the UI callback and coordinator stop both remain one-shot.
 
-```bash
-swift test --filter SelectionControlPanelTests
-```
-
-Expected: FAIL because the current layout uses overlapping 58×30 text controls and has no one-shot target.
-
-- [ ] **Step 4: Implement pure layout modes**
-
-Make `RecordingOverlayPanelLayout` expose optional status/stop frames plus a mode (`horizontal`, `vertical`, `stopOnly`, `unavailable`). Use 28 point status height, 100...220 desired width, 44×44 stop size, and 8 point gap. Apply the approved below/above/clamped priority and the two defensive modes.
-
-- [ ] **Step 5: Implement the image-only one-shot stop control**
-
-Load `.stop`, create a 44×44 borderless image-only button, use `systemRed`, and set Tooltip/accessibility metadata. Route every `NSButton` action—including accessibility press—through one `OneShotActionTarget`. On first activation, invalidate the target, disable the button, close and clear `stopPanel`, then call the coordinator callback. Invalidate the target on stopping, dismiss, display invalidation, and before installing a replacement.
-
-Do not draw a stop title or button in `SelectionOverlayView`. Keep the status label in the separate mouse-transparent status panel. Keep the full-screen red border mouse-transparent.
-
-- [ ] **Step 6: Run panel, overlay, and coordinator tests**
-
-Run:
+- [ ] **Step 3: Run and verify RED**
 
 ```bash
 swift test --filter SelectionControlPanelTests
-swift test --filter SelectionOverlayStyleTests
 swift test --filter RecordingCoordinatorTests
+swift test --filter MenuBarContentTests
 ```
 
-Expected: PASS; UI callback and capture stop each occur once.
+Expected: FAIL because the pure layout/lifecycle and generated target do not exist.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 4: Add deterministic environment seams**
+
+Define focused protocols/value types:
+
+```swift
+protocol SelectionOverlayEnvironment {
+    var displays: [OverlayDisplayDescriptor] { get }
+    func makeSelectionPanel(for display: OverlayDisplayDescriptor) -> SelectionOverlayPanel
+    func makeAuxiliaryPanel(frame: CGRect, contentView: NSView) -> NSPanel
+}
+```
+
+Production adapts `NSScreen`; tests provide display descriptors and fake panel records without querying `NSScreen.screens`. Expose an internal read-only lifecycle snapshot for tests. Inject one `TemplateControlImageLoading` instance into the controller and pass it to both Record and Stop controls.
+
+- [ ] **Step 5: Implement layout, lifecycle, and one-shot Stop**
+
+Implement the approved layout modes. Install a 44×44 `.stop` `TemplateControlButton` with red semantic tint, Tooltip/label “停止录制”, button role, and press action. The first valid mouse or AX activation invalidates the target, disables the button, closes/clears the stop panel, and invokes the callback. Stopping, display loss, dismiss, and replacement all advance generation and invalidate old targets. Full-screen/status panels keep `ignoresMouseEvents = true`; only the 44×44 stop panel receives mouse events.
+
+- [ ] **Step 6: Run focused tests and commit**
 
 ```bash
-git add Sources/GIFpro/Selection/SelectionOverlayController.swift Sources/GIFpro/Selection/SelectionOverlayView.swift Tests/GIFproTests/SelectionControlPanelTests.swift
+swift test --filter SelectionControlPanelTests
+swift test --filter RecordingCoordinatorTests
+swift test --filter MenuBarContentTests
+git add Sources/GIFpro/Selection/RecordingOverlayPresentation.swift Sources/GIFpro/Selection/SelectionOverlayController.swift Tests/GIFproTests/SelectionControlPanelTests.swift Tests/GIFproTests/RecordingCoordinatorTests.swift Tests/GIFproTests/MenuBarContentTests.swift
 git commit -m "fix: use a one-shot template stop control"
 ```
 
-### Task 5: Package resources and verify the visual release
+Expected: all layout, lifecycle, AX, stale-generation, mouse policy, and downstream stop tests PASS.
+
+### Task 5: Package assets fail-closed and verify the App
 
 **Files:**
+- Create: `Scripts/validate-control-assets.sh`
 - Modify: `Scripts/build-app.sh`
 - Modify: `Tests/ScriptTests/BuildAppReleaseChecksTests.sh`
 - Modify: `docs/manual-test-checklist.md`
 - Modify: `docs/release-verification.md`
 
-- [ ] **Step 1: Write failing packaging checks**
+- [ ] **Step 1: Write failing isolated validator tests**
 
-Extend the shell regression to assert the built files exist and match repository bytes:
+The validator accepts an explicit resource directory, checks both exact names, and uses `/usr/bin/sips` to decode each file and require format `png`. Test valid, missing, and corrupt files in a temporary fixture; assert unique diagnostics. This does not rename or mutate repository resources and is safe under interruption and parallel runs.
 
-```sh
-cmp "$project_root/Resources/RecordButton.png" "$app_bundle/Contents/Resources/RecordButton.png"
-cmp "$project_root/Resources/StopButton.png" "$app_bundle/Contents/Resources/StopButton.png"
-```
+- [ ] **Step 2: Write failing Debug and Release bundle tests**
 
-Add a fixture that temporarily points the script at a missing/corrupt repository resource and assert a unique nonzero diagnostic. Restore the resource through `trap`; never mutate the user's Downloads files.
+Run `build-app.sh debug` and `build-app.sh release`. For both, assert the two bundle files exist and `cmp` equal the repository files. For Release, retain arm64, dylib, codesign, plist, and below-10-MB assertions. The shell test must also run the validator fixture; it must not depend on Downloads.
 
-- [ ] **Step 2: Run the shell test to verify RED**
-
-Run:
+- [ ] **Step 3: Run and verify RED**
 
 ```bash
 /bin/sh Tests/ScriptTests/BuildAppReleaseChecksTests.sh
 ```
 
-Expected: FAIL because the App bundle has no `Contents/Resources` button images.
+Expected: FAIL because no bundle resources or validator exist.
 
-- [ ] **Step 3: Copy and verify repository resources in the build script**
+- [ ] **Step 4: Implement fail-closed validation and packaging**
 
-Before signing, create `Contents/Resources`, copy the exact two PNGs from repository `Resources`, and use `cmp` to fail closed on missing or changed output. Do not read `/Users/wdychn/Downloads`. Keep all existing plist, arm64, dylib, size, and codesign checks.
+`build-app.sh` calls the validator on repository `Resources`, creates `Contents/Resources`, copies the exact two PNGs, and uses `cmp` before codesign. A corrupt PNG must fail before copy; changed output must fail after copy. Keep every existing release gate.
 
-- [ ] **Step 4: Run automated verification**
-
-Run:
+- [ ] **Step 5: Run complete automated verification**
 
 ```bash
-/bin/sh -n Scripts/build-app.sh Tests/ScriptTests/BuildAppReleaseChecksTests.sh
+/bin/sh -n Scripts/validate-control-assets.sh Scripts/build-app.sh Tests/ScriptTests/BuildAppReleaseChecksTests.sh
 /bin/sh Tests/ScriptTests/BuildAppReleaseChecksTests.sh
 swift test --parallel
 swift test -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+swift test --filter ImageIODestinationCompatibilityTests
 ./Scripts/build-app.sh release
 lipo -archs .build/app/GIFpro.app/Contents/MacOS/GIFpro
 du -sh .build/app/GIFpro.app
 codesign --verify --deep --strict .build/app/GIFpro.app
+cmp Resources/RecordButton.png .build/app/GIFpro.app/Contents/Resources/RecordButton.png
+cmp Resources/StopButton.png .build/app/GIFpro.app/Contents/Resources/StopButton.png
+git diff --check
+git status --short
 ```
 
-Expected: all tests pass; architecture is exactly `arm64`; App remains below 10 MB; signature is valid; both PNGs match repository bytes.
+Expected: all tests pass, status is clean, App is arm64-only, signed, system-library-only, below 10 MB, and contains byte-identical assets.
 
-- [ ] **Step 5: Run focused manual visual checks**
+- [ ] **Step 6: Run and record manual checks**
 
-Open the App in light and dark appearance. Verify:
-
-- all eight handles resize a 64×64, wide, tall, and full-screen-adjacent selection;
-- record icon follows the accent color and Return starts countdown;
-- the stop icon has no text overlap;
-- double-clicking stop triggers one stop;
-- the area outside the 44×44 stop button remains mouse-transparent while recording.
-
-Record only checks actually performed. Keep macOS 14, mixed-display, chat playback, and 90-second stress gates PENDING unless run in the required environment.
-
-- [ ] **Step 6: Update verification documents**
-
-Record the exact test counts, App byte size, architecture, current OS, date, and manual results. Do not convert existing external PENDING items to PASS.
+In light and dark appearance, verify eight-handle resizing at minimum/wide/tall/edge selections, accent recoloring, Return activation for Record, image-only Stop without overlap, one-shot double activation, and mouse passthrough outside Stop. Record only executed checks. Preserve macOS 14, mixed-display, chat playback, and 90-second stress PENDING gates.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add Scripts/build-app.sh Tests/ScriptTests/BuildAppReleaseChecksTests.sh docs/manual-test-checklist.md docs/release-verification.md
+git add Scripts/validate-control-assets.sh Scripts/build-app.sh Tests/ScriptTests/BuildAppReleaseChecksTests.sh docs/manual-test-checklist.md docs/release-verification.md
 git commit -m "test: verify recording control visuals"
 ```
 
 ## Completion checkpoint
 
-- [ ] `git status --short` is empty.
-- [ ] Focused selection/control tests pass.
-- [ ] Full parallel and strict-concurrency suites pass.
-- [ ] Release contains byte-identical record/stop assets, is arm64-only, signed, system-library-only, and below 10 MB.
-- [ ] Record and stop controls have no text titles and expose complete keyboard/accessibility behavior.
-- [ ] Recording overlay remains mouse-transparent outside the 44×44 stop control.
-- [ ] Existing macOS 14 and manual release gates retain their prior status.
+- [ ] Selection overlay contains no inline countdown/status/stop drawing.
+- [ ] Record and Stop use committed template assets, exact semantic tints, 44×44 controls, 24×24 images, and complete accessibility metadata.
+- [ ] Record retains Return; Stop remains nonactivating and one-shot for mouse and AX activation.
+- [ ] Layout and lifecycle tests cover status-only, horizontal, vertical, stop-only, unavailable, display loss, dismiss, and stale generation.
+- [ ] Debug and Release bundles contain validated, byte-identical PNGs.
+- [ ] Full parallel, strict-concurrency, ImageIO, shell, release, diff, and status checks pass.
+- [ ] Existing external release gates retain their prior status.
