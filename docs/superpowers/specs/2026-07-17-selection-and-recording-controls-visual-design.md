@@ -26,7 +26,7 @@
 
 `SelectionOverlayView` 绘制 2 point 选区边线和八个控制点。控制点位于四角和四边中点，使用 10×10 point 圆角方形：填充色为窗口背景色，2 point 描边取系统强调色，圆角半径为 2 point。位置允许 0.5 point 的像素对齐误差。边线与控制点保持固定 point 尺寸，不随选区宽高拉伸。
 
-每个控制点使用 16×16 point 透明命中区域。命中优先级为控制点、其他区域。用户可以拖动四边、四角调整选区；点击或拖动选区内部的非控制点区域沿用现有行为，开始绘制新选区。本次不增加移动整个选区的功能。现有 64×64 point 最小尺寸、单显示器约束、坐标转换和光标反馈继续生效。
+每个控制点使用 16×16 point 透明命中区域。命中优先级为控制点、其他区域。用户可以拖动四边、四角调整选区；点击或拖动选区内部的非控制点区域沿用现有行为，开始绘制新选区。本次不增加移动整个选区或自定义缩放光标。现有 64×64 point 最小尺寸、单显示器约束和坐标转换继续生效。
 
 框选阶段的全屏 panel 接收鼠标。倒计时和录制阶段继续穿透鼠标，避免遮挡底层应用。
 
@@ -47,7 +47,7 @@
 
 停止图形按比例缩放到 24×24 point，按钮和 panel 固定为 44×44 point。按钮保留辅助功能 role `button`、标签“停止录制”、press action 和 Tooltip“停止录制”。只有这个窄 panel 接收鼠标；录制边框和状态 panel 继续穿透鼠标。
 
-停止按钮使用会话代次和 one-shot gate。第一次有效 activation（鼠标、键盘或辅助功能 press action）先禁用按钮并关闭停止 panel，再调用一次 UI callback。后续双击、迟到 action、重复辅助功能 action 或旧会话 action 都无效。`RecordingCoordinator` 继续保证底层 capture stop 只执行一次。
+停止按钮使用会话代次和 one-shot gate。第一次有效 activation（鼠标或辅助功能 press action）先禁用按钮并关闭停止 panel，再调用一次 UI callback。停止 panel 保持 nonactivating，不获取键盘焦点。后续双击、迟到 action、重复辅助功能 action 或旧会话 action 都无效。`RecordingCoordinator` 继续保证底层 capture stop 只执行一次。
 
 ### 2.5 状态与 panel 生命周期
 
