@@ -82,6 +82,7 @@ final class SaveAndPreviewController: RecordingPreviewPresenting {
     private let now: () -> Date
     private var session: Session?
     private var saveIsActive = false
+    private var committedDestination: URL?
 
     var currentTemporaryFile: TemporaryFile? { session?.file }
 
@@ -110,6 +111,7 @@ final class SaveAndPreviewController: RecordingPreviewPresenting {
         // handing it to the preview adapter and never retain it in this controller.
         let accessURL = try temporaryFiles.validatedAccessURL(for: file)
         session = Session(id: UUID(), file: file, actions: actions)
+        committedDestination = nil
         previewWindow.present(
             url: accessURL,
             metadata: metadata,
@@ -126,6 +128,7 @@ final class SaveAndPreviewController: RecordingPreviewPresenting {
     func dismiss() {
         session = nil
         saveIsActive = false
+        committedDestination = nil
         savePanel.cancel()
         previewWindow.close()
     }
@@ -135,25 +138,25 @@ final class SaveAndPreviewController: RecordingPreviewPresenting {
     }
 
     func rerecord() {
-        guard !saveIsActive, let current = takeSession() else { return }
+        guard !saveIsActive, let current = session else { return }
         do {
             try temporaryFiles.discard(current.file)
+            clearSession()
             previewWindow.close()
             current.actions.rerecord()
         } catch {
-            session = current
             current.actions.saveFailed(error)
         }
     }
 
     func discard() {
-        guard !saveIsActive, let current = takeSession() else { return }
+        guard !saveIsActive, let current = session else { return }
         do {
             try temporaryFiles.discard(current.file)
+            clearSession()
             previewWindow.close()
             current.actions.discarded()
         } catch {
-            session = current
             current.actions.saveFailed(error)
         }
     }
@@ -163,6 +166,10 @@ final class SaveAndPreviewController: RecordingPreviewPresenting {
         saveIsActive = true
         session.actions.saveBegan()
         let sessionID = session.id
+        if committedDestination != nil {
+            retryCommittedCleanup(sessionID: sessionID)
+            return
+        }
         savePanel.present(configuration: savePanelConfiguration()) { [weak self] destination in
             self?.completeSave(destination: destination, sessionID: sessionID)
         }
@@ -170,28 +177,51 @@ final class SaveAndPreviewController: RecordingPreviewPresenting {
 
     private func completeSave(destination: URL?, sessionID: UUID) {
         guard saveIsActive, let current = session, current.id == sessionID else { return }
-        saveIsActive = false
         guard let destination else {
+            saveIsActive = false
             current.actions.saveCancelled()
             return
         }
         do {
             let result = try temporaryFiles.save(current.file, to: destination)
             if result.cleanupPending {
-                try? temporaryFiles.discard(current.file)
+                committedDestination = result.destinationURL
+                retryCommittedCleanup(sessionID: sessionID)
+                return
             }
-            session = nil
-            previewWindow.close()
-            current.actions.saved(result.destinationURL)
-            systemQuickLook.present(url: result.destinationURL)
+            completeCommittedSave(current: current, destination: result.destinationURL)
         } catch {
+            saveIsActive = false
             current.actions.saveFailed(error)
         }
     }
 
-    private func takeSession() -> Session? {
-        defer { session = nil }
-        return session
+    private func retryCommittedCleanup(sessionID: UUID) {
+        guard saveIsActive,
+              let current = session,
+              current.id == sessionID,
+              let destination = committedDestination else { return }
+        do {
+            try temporaryFiles.discard(current.file)
+            completeCommittedSave(current: current, destination: destination)
+        } catch {
+            saveIsActive = false
+            current.actions.saveFailed(error)
+        }
+    }
+
+    private func completeCommittedSave(current: Session, destination: URL) {
+        session = nil
+        committedDestination = nil
+        saveIsActive = false
+        previewWindow.close()
+        current.actions.saved(destination)
+        systemQuickLook.present(url: destination)
+    }
+
+    private func clearSession() {
+        session = nil
+        committedDestination = nil
     }
 
     private func savePanelConfiguration() -> GIFSavePanelConfiguration {

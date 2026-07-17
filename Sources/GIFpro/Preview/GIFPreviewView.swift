@@ -115,10 +115,34 @@ final class GIFPreviewWindowController: GIFPreviewWindowPresenting {
 @MainActor
 final class AppKitGIFSavePanelPresenter: GIFSavePanelPresenting {
     private weak var previewWindow: GIFPreviewWindowController?
+    private let panelFactory: () -> NSSavePanel
+    private let beginPanel: (NSSavePanel, NSWindow?, @escaping (NSApplication.ModalResponse) -> Void) -> Void
+    private let cancelPanel: (NSSavePanel) -> Void
     private var activePanel: NSSavePanel?
 
     init(previewWindow: GIFPreviewWindowController) {
         self.previewWindow = previewWindow
+        panelFactory = NSSavePanel.init
+        beginPanel = { panel, parent, completion in
+            if let parent {
+                panel.beginSheetModal(for: parent, completionHandler: completion)
+            } else {
+                panel.begin(completionHandler: completion)
+            }
+        }
+        cancelPanel = { $0.cancelOperation(nil) }
+    }
+
+    init(
+        previewWindow: GIFPreviewWindowController,
+        panelFactory: @escaping () -> NSSavePanel,
+        beginPanel: @escaping (NSSavePanel, NSWindow?, @escaping (NSApplication.ModalResponse) -> Void) -> Void,
+        cancelPanel: @escaping (NSSavePanel) -> Void
+    ) {
+        self.previewWindow = previewWindow
+        self.panelFactory = panelFactory
+        self.beginPanel = beginPanel
+        self.cancelPanel = cancelPanel
     }
 
     func present(
@@ -126,28 +150,28 @@ final class AppKitGIFSavePanelPresenter: GIFSavePanelPresenting {
         completion: @escaping @MainActor (URL?) -> Void
     ) {
         guard activePanel == nil else { return }
-        let panel = NSSavePanel()
+        let panel = panelFactory()
         activePanel = panel
         panel.allowedContentTypes = [.gif]
         panel.allowsOtherFileTypes = false
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         panel.nameFieldStringValue = configuration.suggestedFilename
-        let completed: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+        let completed: (NSApplication.ModalResponse) -> Void = { [weak self, weak panel] response in
+            guard let self,
+                  let panel,
+                  self.activePanel === panel else { return }
             let result = response == .OK ? panel.url : nil
-            self?.activePanel = nil
+            self.activePanel = nil
             completion(result)
         }
-        if let parent = previewWindow?.window {
-            panel.beginSheetModal(for: parent, completionHandler: completed)
-        } else {
-            panel.begin(completionHandler: completed)
-        }
+        beginPanel(panel, previewWindow?.window, completed)
     }
 
     func cancel() {
-        activePanel?.cancelOperation(nil)
+        guard let panel = activePanel else { return }
         activePanel = nil
+        cancelPanel(panel)
     }
 }
 

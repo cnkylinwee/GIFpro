@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import GIFpro
@@ -54,14 +55,27 @@ final class SaveAndPreviewControllerTests: XCTestCase {
         XCTAssertNil(harness.controller.currentTemporaryFile)
     }
 
-    func testCommittedSaveRetriesPendingTemporarySourceCleanupBeforeCompleting() throws {
-        let harness = try PreviewHarness(saveCleanupPending: true)
+    func testCommittedSaveRetainsSessionUntilPendingSourceCleanupRetrySucceeds() throws {
+        let harness = try PreviewHarness(saveCleanupPending: true, discardFailures: 1)
         try harness.present()
+        let destination = URL(fileURLWithPath: "/Users/example/Desktop/result.gif")
 
-        harness.savePanel.complete(with: URL(fileURLWithPath: "/Users/example/Desktop/result.gif"))
+        harness.savePanel.complete(with: destination)
 
         XCTAssertEqual(harness.store.discardCount, 1)
-        XCTAssertEqual(harness.actionRecorder.savedURLs.count, 1)
+        XCTAssertTrue(harness.controller.currentTemporaryFile === harness.file)
+        XCTAssertTrue(harness.preview.isVisible)
+        XCTAssertTrue(harness.actionRecorder.savedURLs.isEmpty)
+        XCTAssertTrue(harness.quickLook.urls.isEmpty)
+
+        harness.controller.saveAgain()
+
+        XCTAssertEqual(harness.store.savedDestinations, [destination])
+        XCTAssertEqual(harness.store.discardCount, 2)
+        XCTAssertNil(harness.controller.currentTemporaryFile)
+        XCTAssertEqual(harness.actionRecorder.savedURLs, [destination])
+        XCTAssertEqual(harness.quickLook.urls, [destination])
+        XCTAssertThrowsError(try harness.store.backingStore.validatedAccessURL(for: harness.file))
     }
 
     func testSaveCancellationReturnsToPreviewReadyAndRetainsTemporaryFileAndPanel() throws {
@@ -143,6 +157,41 @@ final class SaveAndPreviewControllerTests: XCTestCase {
         XCTAssertTrue(harness.quickLook.urls.isEmpty)
     }
 
+    func testAppKitSavePanelIgnoresLateCompletionFromCancelledPriorPanel() {
+        let previewWindow = GIFPreviewWindowController()
+        var panels: [NSSavePanel] = []
+        var completions: [ObjectIdentifier: (NSApplication.ModalResponse) -> Void] = [:]
+        var cancelled: [ObjectIdentifier] = []
+        let presenter = AppKitGIFSavePanelPresenter(
+            previewWindow: previewWindow,
+            panelFactory: {
+                let panel = NSSavePanel()
+                panels.append(panel)
+                return panel
+            },
+            beginPanel: { panel, _, completion in completions[ObjectIdentifier(panel)] = completion },
+            cancelPanel: { panel in cancelled.append(ObjectIdentifier(panel)) }
+        )
+        let configuration = GIFSavePanelConfiguration(
+            suggestedFilename: "test.gif",
+            allowedFileExtension: "gif"
+        )
+        var results: [String] = []
+
+        presenter.present(configuration: configuration) { _ in results.append("A") }
+        let firstID = try! XCTUnwrap(completions.keys.first)
+        let firstCompletion = try! XCTUnwrap(completions[firstID])
+        presenter.cancel()
+        presenter.present(configuration: configuration) { _ in results.append("B") }
+        let secondID = try! XCTUnwrap(completions.keys.first { $0 != firstID })
+
+        firstCompletion(.cancel)
+        presenter.cancel()
+
+        XCTAssertTrue(results.isEmpty)
+        XCTAssertEqual(cancelled, [firstID, secondID])
+    }
+
     func testRootOrLeafValidationFailureDoesNotExposeURLOrPresentSavePanel() throws {
         let harness = try PreviewHarness(validationFailure: true)
 
@@ -165,7 +214,7 @@ private final class PreviewHarness {
     let controller: SaveAndPreviewController
     let file: TemporaryFile
 
-    init(saveFailures: Int = 0, validationFailure: Bool = false, saveCleanupPending: Bool = false) throws {
+    init(saveFailures: Int = 0, validationFailure: Bool = false, saveCleanupPending: Bool = false, discardFailures: Int = 0) throws {
         events = PreviewEventRecorder()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let backingStore = TemporaryFileStore(rootURL: root)
@@ -175,7 +224,8 @@ private final class PreviewHarness {
             events: events,
             saveFailures: saveFailures,
             validationFailure: validationFailure,
-            saveCleanupPending: saveCleanupPending
+            saveCleanupPending: saveCleanupPending,
+            discardFailures: discardFailures
         )
         preview = FakePreviewWindow(events: events)
         savePanel = FakeSavePanel(events: events)
@@ -213,15 +263,17 @@ private final class FakePreviewTemporaryStore: PreviewTemporaryFileManaging {
     var remainingSaveFailures: Int
     let validationFailure: Bool
     let saveCleanupPending: Bool
+    var remainingDiscardFailures: Int
     var savedDestinations: [URL] = []
     var discardCount = 0
 
-    init(backingStore: TemporaryFileStore, events: PreviewEventRecorder, saveFailures: Int, validationFailure: Bool, saveCleanupPending: Bool) {
+    init(backingStore: TemporaryFileStore, events: PreviewEventRecorder, saveFailures: Int, validationFailure: Bool, saveCleanupPending: Bool, discardFailures: Int) {
         self.backingStore = backingStore
         self.events = events
         remainingSaveFailures = saveFailures
         self.validationFailure = validationFailure
         self.saveCleanupPending = saveCleanupPending
+        remainingDiscardFailures = discardFailures
     }
 
     func validatedAccessURL(for file: TemporaryFile) throws -> URL {
@@ -237,13 +289,19 @@ private final class FakePreviewTemporaryStore: PreviewTemporaryFileManaging {
             remainingSaveFailures -= 1
             throw PreviewTestError.expected
         }
-        try backingStore.discardTemporaryFile(file)
+        if !saveCleanupPending {
+            try backingStore.discardTemporaryFile(file)
+        }
         return .saved(destinationURL: destinationURL, cleanupPending: saveCleanupPending)
     }
 
     func discard(_ file: TemporaryFile) throws {
         events.values.append("discard")
         discardCount += 1
+        if remainingDiscardFailures > 0 {
+            remainingDiscardFailures -= 1
+            throw PreviewTestError.expected
+        }
         try backingStore.discardTemporaryFile(file)
     }
 }
