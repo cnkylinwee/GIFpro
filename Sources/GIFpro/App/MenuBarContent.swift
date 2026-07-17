@@ -28,12 +28,12 @@ final class RecordingCommandRouter: ObservableObject {
 }
 
 struct MenuBarContent: View {
-    @ObservedObject var commandRouter: RecordingCommandRouter
+    @ObservedObject var coordinator: RecordingCoordinator
     let permissionService: PermissionService
 
     var body: some View {
-        Button(commandRouter.recordingCommandTitle) {
-            commandRouter.performRecordingCommand()
+        Button(coordinator.recordingCommandTitle) {
+            Task { await coordinator.toggleRecording() }
         }
 
         Button("打开屏幕录制设置") {

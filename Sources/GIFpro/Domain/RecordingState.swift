@@ -2,6 +2,9 @@ import Foundation
 
 enum RecordingFailure: Equatable, Sendable {
     case permissionDenied
+    case insufficientDiskSpace
+    case capacityUnavailable
+    case encoderInitializationFailed
     case captureFailed
     case finalizationFailed
     case saveFailed
