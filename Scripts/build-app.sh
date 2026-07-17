@@ -13,10 +13,11 @@ esac
 
 project_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 app_contents="$project_root/.build/app/GIFpro.app/Contents"
-executable="$project_root/.build/arm64-apple-macosx/$configuration/GIFpro"
 
 cd "$project_root"
 swift build -c "$configuration" --arch arm64
+binary_directory="$(swift build -c "$configuration" --arch arm64 --show-bin-path)"
+executable="$binary_directory/GIFpro"
 
 rm -rf "$app_contents"
 mkdir -p "$app_contents/MacOS"
@@ -29,13 +30,10 @@ if [ "$architectures" != "arm64" ]; then
     exit 1
 fi
 
-non_system_dylibs="$(
-    otool -L "$app_contents/MacOS/GIFpro" \
-        | tail -n +2 \
-        | awk '{ print $1 }' \
-        | grep -Ev '^(/System/Library/|/usr/lib/)' \
-        || true
-)"
+linked_libraries="$(otool -L "$app_contents/MacOS/GIFpro")"
+non_system_dylibs="$(printf '%s\n' "$linked_libraries" | awk '
+    NR > 1 && $1 !~ "^/System/Library/" && $1 !~ "^/usr/lib/" { print $1 }
+')"
 if [ -n "$non_system_dylibs" ]; then
     echo "error: executable links non-system libraries:" >&2
     echo "$non_system_dylibs" >&2
