@@ -115,7 +115,7 @@ previewReady → selecting（重新录制）或 discarding → idle
 
 ### 4.2 实时 GIF 写入
 
-编码开始时，`GIFStreamEncoder` 在系统临时目录创建 `CGImageDestination`。`count` 参数使用“所选时长 × FPS”的理论上限，管线绝不添加超过该上限的帧。Apple SDK 明确将超出 `count` 的写入定义为错误；提前停止或背压跳帧只会减少实际添加的帧。实现开始时必须先用独立兼容性测试验证 macOS 14、当前 macOS 和 CI 目标环境都能以少于 `count` 的帧成功 `Finalize`，并读回正确帧数。该测试是接入 ScreenCaptureKit 前的架构门槛；任一支持系统失败时，停止实施并重新选择编码路线，不使用未验证的补帧技巧。GIF 设置无限循环。
+编码开始时，`GIFStreamEncoder` 在系统临时目录创建 `CGImageDestination`。`count` 参数使用“所选时长 × FPS”的理论上限，管线绝不添加超过该上限的帧。Apple SDK 明确将超出 `count` 的写入定义为错误；提前停止或背压跳帧只会减少实际添加的帧。独立兼容性测试必须验证以少于 `count` 的帧成功 `Finalize`，并读回正确帧数。2026-07-17，用户批准将 macOS 14 runtime compatibility 从接入 ScreenCaptureKit 前的门槛移至 Task 12 的发布硬门槛：兼容性测试和全套测试已在当前 macOS 27 系统通过，因此 Tasks 4–11 可以继续；但发布或声明 MVP 完成前，必须在 macOS 14 真机、VM 或 CI 上重新运行兼容性测试和全套测试。尚无 macOS 14 通过结果；若该门槛失败，停止发布并返回编码架构设计，不使用未验证的补帧技巧。GIF 设置无限循环。
 
 每个被接受的帧按以下顺序处理：
 
@@ -174,7 +174,7 @@ GIFpro 不发起网络请求，不包含分析 SDK，不上传录制内容。
 测试帧生成器向 `FrameProcessor` 和 `GIFStreamEncoder` 输入固定颜色与时间戳序列。测试读取生成的 GIF，验证：
 
 - 画布尺寸和帧数。
-- 使用大于实际写入帧数的 destination `count`，验证 `Finalize` 成功且读回帧数正确；该测试必须覆盖 macOS 14 和当前 macOS。
+- 使用大于实际写入帧数的 destination `count`，验证 `Finalize` 成功且读回帧数正确；当前 macOS 27 已通过，macOS 14 必须在发布或完成声明前通过真机、VM 或 CI 验证。
 - 8/12/15 FPS 对应的延迟。
 - 提前停止和模拟丢帧后的总时长。
 - 无限循环元数据。
@@ -192,6 +192,7 @@ GIFpro 不发起网络请求，不包含分析 SDK，不上传录制内容。
 ## 8. 验收标准
 
 - macOS 14+ Apple Silicon 机器能完成全部主流程。
+- 发布或声明完成前，ImageIO 兼容性测试和全套测试必须在 macOS 14 真机、VM 或 CI 通过；失败时返回编码架构设计。
 - 1080p、1×、12 FPS、90 秒录制时，内存不随帧数持续增长；录制后资源得到释放。
 - 编码背压不会阻塞框选和停止操作；发生丢帧时，成品时长仍与实际录制时长一致，误差不超过 0.2 秒。
 - 录制边框、控制条和 GIFpro 菜单不会出现在成品中。

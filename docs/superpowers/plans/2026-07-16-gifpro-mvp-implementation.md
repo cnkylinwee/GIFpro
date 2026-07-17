@@ -13,9 +13,9 @@
 ## Working assumptions and gates
 
 - Design spec: `docs/superpowers/specs/2026-07-16-gifpro-macos-gif-recorder-design.md`.
-- The current machine has Apple Command Line Tools and Swift 6.4, but no full Xcode installation. Use SwiftPM for reproducible builds and a checked-in script to assemble the `.app` bundle. Opening `Package.swift` in Xcode remains possible later.
+- The current machine runs macOS 27 with Xcode 26.6 and Swift 6.3.3. Use SwiftPM for reproducible builds and a checked-in script to assemble the `.app` bundle; keep the package in Swift 5 language mode for the macOS 14 release gate.
 - Set `swift-tools-version` to 5.10 and compile in Swift 5 language mode so the macOS 14 CI runner can build the project.
-- Task 3 is an architecture gate. Do not begin ScreenCaptureKit integration until the ImageIO “fewer frames than destination count” test passes on macOS 14 and the current development system.
+- 2026-07-17 user-approved gate adjustment: the ImageIO compatibility test and full suite pass on the current macOS 27 development system, so Tasks 4–11 may continue without connecting GitHub. macOS 14 runtime compatibility is deferred to a Task 12 release gate and has not yet passed. Before release or any MVP completion claim, run both the compatibility test and the full suite on macOS 14 hardware, a VM, or CI; failure requires returning to the encoding architecture design.
 - Apply TDD to pure logic and file services. Use thin adapters plus manual tests for TCC, global hot keys, `NSPanel`, ScreenCaptureKit, `NSSavePanel`, and Quick Look.
 - Do not add third-party packages, analytics, networking, Intel slices, or features excluded by the spec.
 
@@ -232,9 +232,9 @@ Expected: PASS with both output GIFs readable.
 
 Create a GitHub Actions workflow triggered by pushes and pull requests. Use `runs-on: macos-14`, run `swift test --filter ImageIODestinationCompatibilityTests`, then run the full `swift test` suite. Do not publish artifacts or require secrets.
 
-- [ ] **Step 4: Run or obtain the macOS 14 result before continuing**
+- [ ] **Step 4: Record the approved macOS 14 gate deferral**
 
-Expected: PASS on macOS 14. If it fails, stop here and return to design; do not implement frame padding or assume `count: 0` works.
+On 2026-07-17, the user approved continuing Tasks 4–11 after the compatibility test and full suite passed on the current macOS 27 system. A macOS 14 result is still outstanding and is required in Task 12 before release or any completion claim. If macOS 14 fails, return to design; do not implement frame padding or assume `count: 0` works.
 
 - [ ] **Step 5: Commit the proven gate**
 
@@ -589,11 +589,22 @@ git commit -m "feat: preview and save recorded GIFs"
 - Modify: `.github/workflows/macos.yml`
 - Create: `README.md`
 
-- [ ] **Step 1: Add the synthetic end-to-end test**
+- [ ] **Step 1: Satisfy the macOS 14 release gate**
+
+On macOS 14 hardware, a VM, or CI, run:
+
+```bash
+swift test --filter ImageIODestinationCompatibilityTests
+swift test
+```
+
+Expected: both commands PASS. This result is mandatory before release or any MVP completion claim. The current macOS 27 system has already passed both commands, but that does not count as a macOS 14 result. If either macOS 14 command fails, stop release work and return to the encoding architecture design.
+
+- [ ] **Step 2: Add the synthetic end-to-end test**
 
 Feed generated pixel buffers through processor, timing, and encoder for regular and dropped-frame sequences. Assert output dimensions for a 300×200 pt Retina selection at 1× and 2×, frame count, infinite loop, total duration error ≤0.2 second, and cleanup.
 
-- [ ] **Step 2: Run all automated tests**
+- [ ] **Step 3: Run all automated tests**
 
 Run:
 
@@ -604,7 +615,7 @@ swift build -c release --arch arm64
 
 Expected: all tests PASS; release build succeeds.
 
-- [ ] **Step 3: Strengthen release verification**
+- [ ] **Step 4: Strengthen release verification**
 
 Make `Scripts/build-app.sh release` fail unless:
 
@@ -614,15 +625,15 @@ Make `Scripts/build-app.sh release` fail unless:
 - `codesign --verify --deep --strict` succeeds;
 - `plutil -lint Resources/Info.plist` succeeds.
 
-- [ ] **Step 4: Run the manual acceptance matrix**
+- [ ] **Step 5: Run the manual acceptance matrix**
 
 Document results for permission grant/deny/recheck, single and mixed-scale displays, cross-screen rejection, 1×/2×, every FPS and duration, cursor on/off, early stop, automatic stop, disk-low simulation, save cancellation paths, display disconnect, and playback in Finder, Quick Look, Safari, and one chat app.
 
-- [ ] **Step 5: Run the 90-second M1-class stress test**
+- [ ] **Step 6: Run the 90-second M1-class stress test**
 
 Record 1080p, 1×, 12 FPS for 90 seconds. Use Activity Monitor or `memory_pressure`/`ps` samples to show memory has no monotonic frame-count growth and returns near idle after save. Confirm duration error ≤0.2 second and auto-stop error ≤0.5 second.
 
-- [ ] **Step 6: Build the final local artifact and inspect it**
+- [ ] **Step 7: Build the final local artifact and inspect it**
 
 Run:
 
@@ -635,11 +646,11 @@ du -sh .build/app/GIFpro.app
 
 Expected: valid signature; `arm64`; size below 10 MB.
 
-- [ ] **Step 7: Update user documentation**
+- [ ] **Step 8: Update user documentation**
 
 README must state macOS 14+, Apple Silicon only, screen-recording permission steps, `⌥⌘G`, supported settings, build commands, test commands, and the absence of network/telemetry.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add Tests/GIFproIntegrationTests/GIFPipelineTests.swift docs/manual-test-checklist.md Scripts/build-app.sh .github/workflows/macos.yml README.md
@@ -651,8 +662,8 @@ git commit -m "test: verify GIFpro MVP release"
 Before declaring the MVP complete:
 
 1. `git status --short` is empty.
-2. `swift test --parallel` passes locally and on macOS 14 CI.
-3. The ImageIO compatibility gate passes on macOS 14 and the current development system.
+2. The full test suite passes locally and on macOS 14 hardware, a VM, or CI.
+3. The ImageIO compatibility gate passes on macOS 14 hardware, a VM, or CI, in addition to the recorded macOS 27 pass.
 4. The manual acceptance checklist contains results, machine model, OS version, and date.
 5. The release `.app` is arm64-only, signed, below 10 MB, and contains no third-party dylibs.
 6. The implementation matches the approved design spec; deferred features remain absent.
