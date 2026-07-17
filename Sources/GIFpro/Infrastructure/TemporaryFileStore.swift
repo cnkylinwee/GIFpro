@@ -1,6 +1,50 @@
 import Darwin
 import Foundation
 
+final class TemporaryFile {
+    let url: URL
+    let name: String
+
+    fileprivate let ownerID: UUID
+    fileprivate let device: dev_t
+    fileprivate let inode: ino_t
+    private let descriptor: Int32
+
+    fileprivate init(
+        url: URL,
+        name: String,
+        descriptor: Int32,
+        ownerID: UUID,
+        device: dev_t,
+        inode: ino_t
+    ) {
+        self.url = url
+        self.name = name
+        self.descriptor = descriptor
+        self.ownerID = ownerID
+        self.device = device
+        self.inode = inode
+    }
+
+    deinit {
+        close(descriptor)
+    }
+
+    /// The descriptor is borrowed only for the duration of `body`.
+    func withFileDescriptor<T>(_ body: (Int32) throws -> T) rethrows -> T {
+        try body(descriptor)
+    }
+
+    /// Returns a caller-owned descriptor suitable for a fd-backed data consumer.
+    func duplicateFileDescriptor() throws -> Int32 {
+        let duplicate = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+        guard duplicate >= 0 else {
+            throw TemporaryFileStore.StoreError.systemCall("duplicate temporary file", errno)
+        }
+        return duplicate
+    }
+}
+
 final class TemporaryFileStore {
     enum CapacityPolicy: Equatable {
         case canStart
@@ -8,40 +52,81 @@ final class TemporaryFileStore {
         case mustStop
     }
 
+    enum SaveWarning: Equatable {
+        case destinationDirectorySyncFailed
+        case sourceCleanupFailed
+        case sourceChanged
+    }
+
+    struct SaveResult: Equatable {
+        let destinationURL: URL
+        let cleanupPending: Bool
+        let warnings: [SaveWarning]
+
+        static func saved(
+            destinationURL: URL,
+            cleanupPending: Bool = false,
+            warnings: [SaveWarning] = []
+        ) -> SaveResult {
+            SaveResult(
+                destinationURL: destinationURL,
+                cleanupPending: cleanupPending,
+                warnings: warnings
+            )
+        }
+    }
+
     enum StoreError: Error, Equatable {
         case unsafeURL(URL)
         case invalidSource(URL)
+        case foreignTemporaryFile
         case capacityUnavailable
         case systemCall(String, Int32)
     }
 
-    enum RenameResult {
-        case moved
-        case crossVolume
-    }
-
     struct FileOperations {
-        var renameOwnedFile: (Int32, String, URL) throws -> RenameResult
         var copyBytes: (Int32, Int32) throws -> Void
+        var syncStaging: (Int32) throws -> Void
+        var replaceStaging: (Int32, String, String) throws -> Void
+        var syncDestinationDirectory: (Int32) throws -> Void
+        var unlinkSource: (Int32, String) throws -> Void
 
         static var posix: FileOperations {
             FileOperations(
-                renameOwnedFile: { rootDescriptor, sourceName, destinationURL in
-                    let result = sourceName.withCString { sourcePath in
-                        destinationURL.path.withCString { destinationPath in
-                            renameat(rootDescriptor, sourcePath, AT_FDCWD, destinationPath)
+                copyBytes: copyFileBytes,
+                syncStaging: { descriptor in
+                    guard fsync(descriptor) == 0 else {
+                        throw StoreError.systemCall("fsync staging", errno)
+                    }
+                },
+                replaceStaging: { directoryDescriptor, stagingName, destinationName in
+                    let result = stagingName.withCString { stagingPath in
+                        destinationName.withCString { destinationPath in
+                            renameat(
+                                directoryDescriptor,
+                                stagingPath,
+                                directoryDescriptor,
+                                destinationPath
+                            )
                         }
                     }
-                    if result == 0 {
-                        return .moved
+                    guard result == 0 else {
+                        throw StoreError.systemCall("renameat staging", errno)
                     }
-                    let code = errno
-                    if code == EXDEV {
-                        return .crossVolume
-                    }
-                    throw StoreError.systemCall("renameat", code)
                 },
-                copyBytes: copyFileBytes
+                syncDestinationDirectory: { descriptor in
+                    guard fsync(descriptor) == 0 else {
+                        throw StoreError.systemCall("fsync destination directory", errno)
+                    }
+                },
+                unlinkSource: { directoryDescriptor, sourceName in
+                    let result = sourceName.withCString {
+                        unlinkat(directoryDescriptor, $0, 0)
+                    }
+                    guard result == 0 || errno == ENOENT else {
+                        throw StoreError.systemCall("unlinkat source", errno)
+                    }
+                }
             )
         }
     }
@@ -49,10 +134,17 @@ final class TemporaryFileStore {
     static let minimumStartCapacityBytes: Int64 = 1_000_000_000
     static let minimumContinueCapacityBytes: Int64 = 256_000_000
 
+    private enum EntryIdentity {
+        case missing
+        case matches
+        case changed
+    }
+
     private let fileManager: FileManager
     private let rootURL: URL
     private let availableCapacity: () throws -> Int64
     private let fileOperations: FileOperations
+    private let ownerID = UUID()
     private let descriptorLock = NSLock()
     private var pinnedRootDescriptor: Int32?
 
@@ -93,171 +185,62 @@ final class TemporaryFileStore {
         }
     }
 
-    func makeTemporaryFileURL() throws -> URL {
-        _ = try rootDescriptor()
-        return rootURL.appendingPathComponent("\(UUID().uuidString).gif", isDirectory: false)
-    }
+    func makeTemporaryFile() throws -> TemporaryFile {
+        let rootDescriptor = try rootDescriptor()
+        while true {
+            let name = "\(UUID().uuidString).gif"
+            let descriptor = name.withCString {
+                openat(
+                    rootDescriptor,
+                    $0,
+                    O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+                    mode_t(S_IRUSR | S_IWUSR)
+                )
+            }
+            if descriptor < 0 {
+                if errno == EEXIST { continue }
+                throw StoreError.systemCall("openat temporary file", errno)
+            }
 
-    func moveTemporaryFile(at sourceURL: URL, to destinationURL: URL) throws {
-        guard destinationURL.isFileURL else {
-            throw StoreError.unsafeURL(destinationURL)
-        }
-        let sourceName = try ownedLeafName(for: sourceURL)
-        let descriptor = try rootDescriptor()
-        try requireRegularFile(named: sourceName, sourceURL: sourceURL, in: descriptor)
-
-        switch try fileOperations.renameOwnedFile(descriptor, sourceName, destinationURL) {
-        case .moved:
-            return
-        case .crossVolume:
-            try replaceAcrossVolumes(
-                sourceName: sourceName,
-                sourceURL: sourceURL,
-                rootDescriptor: descriptor,
-                destinationURL: destinationURL
+            var status = stat()
+            guard fstat(descriptor, &status) == 0,
+                  status.st_mode & S_IFMT == S_IFREG else {
+                let code = errno
+                close(descriptor)
+                _ = name.withCString { unlinkat(rootDescriptor, $0, 0) }
+                throw StoreError.systemCall("fstat temporary file", code)
+            }
+            return TemporaryFile(
+                url: rootURL.appendingPathComponent(name, isDirectory: false),
+                name: name,
+                descriptor: descriptor,
+                ownerID: ownerID,
+                device: status.st_dev,
+                inode: status.st_ino
             )
         }
     }
 
-    func discardTemporaryFile(at url: URL) throws {
-        let name = try ownedLeafName(for: url)
-        let descriptor = try rootDescriptor()
-        guard try isRegularFileIfPresent(named: name, sourceURL: url, in: descriptor) else {
-            return
+    func saveTemporaryFile(
+        _ temporaryFile: TemporaryFile,
+        to destinationURL: URL
+    ) throws -> SaveResult {
+        try validateOwner(of: temporaryFile)
+        guard destinationURL.isFileURL else {
+            throw StoreError.unsafeURL(destinationURL)
         }
+        let rootDescriptor = try rootDescriptor()
+        guard try entryIdentity(of: temporaryFile, in: rootDescriptor) == .matches else {
+            throw StoreError.invalidSource(temporaryFile.url)
+        }
+        try validateOpenTemporaryFile(temporaryFile)
 
-        let result = name.withCString { unlinkat(descriptor, $0, 0) }
-        if result != 0, errno != ENOENT {
-            throw StoreError.systemCall("unlinkat", errno)
-        }
-    }
-
-    func cleanupStaleFiles() throws {
-        let descriptor = try rootDescriptor()
-        for name in try entryNames(in: descriptor) {
-            try removeEntry(named: name, from: descriptor)
-        }
-    }
-
-    func capacityPolicy() throws -> CapacityPolicy {
-        let capacity = try availableCapacity()
-        if capacity >= Self.minimumStartCapacityBytes {
-            return .canStart
-        }
-        if capacity < Self.minimumContinueCapacityBytes {
-            return .mustStop
-        }
-        return .continue
-    }
-
-    private func rootDescriptor() throws -> Int32 {
-        descriptorLock.lock()
-        defer { descriptorLock.unlock() }
-        if let descriptor = pinnedRootDescriptor {
-            return descriptor
-        }
-
-        try fileManager.createDirectory(
-            at: rootURL,
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
-        let descriptor = rootURL.path.withCString {
-            open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        }
-        guard descriptor >= 0 else {
-            throw StoreError.systemCall("open root", errno)
-        }
-
-        var status = stat()
-        guard fstat(descriptor, &status) == 0 else {
-            let code = errno
-            close(descriptor)
-            throw StoreError.systemCall("fstat root", code)
-        }
-        guard status.st_mode & S_IFMT == S_IFDIR else {
-            close(descriptor)
-            throw StoreError.unsafeURL(rootURL)
-        }
-
-        pinnedRootDescriptor = descriptor
-        return descriptor
-    }
-
-    private func ownedLeafName(for url: URL) throws -> String {
-        guard url.isFileURL else {
-            throw StoreError.unsafeURL(url)
-        }
-        let standardizedURL = url.standardizedFileURL
-        guard standardizedURL.deletingLastPathComponent() == rootURL,
-              standardizedURL != rootURL else {
-            throw StoreError.unsafeURL(url)
-        }
-        let name = standardizedURL.lastPathComponent
-        guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else {
-            throw StoreError.unsafeURL(url)
-        }
-        return name
-    }
-
-    private func requireRegularFile(
-        named name: String,
-        sourceURL: URL,
-        in descriptor: Int32
-    ) throws {
-        guard try isRegularFileIfPresent(named: name, sourceURL: sourceURL, in: descriptor) else {
-            throw StoreError.systemCall("fstatat", ENOENT)
-        }
-    }
-
-    private func isRegularFileIfPresent(
-        named name: String,
-        sourceURL: URL,
-        in descriptor: Int32
-    ) throws -> Bool {
-        var status = stat()
-        let result = name.withCString {
-            fstatat(descriptor, $0, &status, AT_SYMLINK_NOFOLLOW)
-        }
-        if result != 0 {
-            if errno == ENOENT {
-                return false
-            }
-            throw StoreError.systemCall("fstatat", errno)
-        }
-        guard status.st_mode & S_IFMT == S_IFREG else {
-            throw StoreError.invalidSource(sourceURL)
-        }
-        return true
-    }
-
-    private func replaceAcrossVolumes(
-        sourceName: String,
-        sourceURL: URL,
-        rootDescriptor: Int32,
-        destinationURL: URL
-    ) throws {
-        try requireRegularFile(named: sourceName, sourceURL: sourceURL, in: rootDescriptor)
-        let sourceDescriptor = sourceName.withCString {
-            openat(rootDescriptor, $0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        }
-        guard sourceDescriptor >= 0 else {
-            throw StoreError.systemCall("openat source", errno)
-        }
-        defer { close(sourceDescriptor) }
-
-        var sourceStatus = stat()
-        guard fstat(sourceDescriptor, &sourceStatus) == 0,
-              sourceStatus.st_mode & S_IFMT == S_IFREG else {
-            throw StoreError.invalidSource(sourceURL)
-        }
-
-        let destinationDirectoryURL = destinationURL.deletingLastPathComponent().standardizedFileURL
-        let destinationName = destinationURL.lastPathComponent
+        let destination = destinationURL.standardizedFileURL
+        let destinationName = destination.lastPathComponent
         guard !destinationName.isEmpty, destinationName != ".", destinationName != ".." else {
             throw StoreError.unsafeURL(destinationURL)
         }
-        let destinationDirectoryDescriptor = destinationDirectoryURL.path.withCString {
+        let destinationDirectoryDescriptor = destination.deletingLastPathComponent().path.withCString {
             open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         }
         guard destinationDirectoryDescriptor >= 0 else {
@@ -281,9 +264,7 @@ final class TemporaryFileStore {
         var stagingIsOpen = true
         var stagingNeedsRemoval = true
         defer {
-            if stagingIsOpen {
-                close(stagingDescriptor)
-            }
+            if stagingIsOpen { close(stagingDescriptor) }
             if stagingNeedsRemoval {
                 _ = stagingName.withCString {
                     unlinkat(destinationDirectoryDescriptor, $0, 0)
@@ -291,45 +272,288 @@ final class TemporaryFileStore {
             }
         }
 
-        try fileOperations.copyBytes(sourceDescriptor, stagingDescriptor)
-        guard fsync(stagingDescriptor) == 0 else {
-            throw StoreError.systemCall("fsync staging", errno)
+        try temporaryFile.withFileDescriptor {
+            try fileOperations.copyBytes($0, stagingDescriptor)
         }
+        try fileOperations.syncStaging(stagingDescriptor)
         let closeResult = close(stagingDescriptor)
         stagingIsOpen = false
         guard closeResult == 0 else {
             throw StoreError.systemCall("close staging", errno)
         }
 
-        let replaceResult = stagingName.withCString { stagingPath in
-            destinationName.withCString { destinationPath in
-                renameat(
-                    destinationDirectoryDescriptor,
-                    stagingPath,
-                    destinationDirectoryDescriptor,
-                    destinationPath
+        try fileOperations.replaceStaging(
+            destinationDirectoryDescriptor,
+            stagingName,
+            destinationName
+        )
+        stagingNeedsRemoval = false // Commit point: destination now contains the new GIF.
+
+        var warnings: [SaveWarning] = []
+        do {
+            try fileOperations.syncDestinationDirectory(destinationDirectoryDescriptor)
+        } catch {
+            warnings.append(.destinationDirectorySyncFailed)
+        }
+
+        var cleanupPending = false
+        do {
+            switch try removeMatchingSource(temporaryFile, from: rootDescriptor) {
+            case .matches:
+                break
+            case .missing, .changed:
+                cleanupPending = true
+                warnings.append(.sourceChanged)
+            }
+        } catch {
+            cleanupPending = true
+            warnings.append(.sourceCleanupFailed)
+        }
+
+        return .saved(
+            destinationURL: destinationURL,
+            cleanupPending: cleanupPending,
+            warnings: warnings
+        )
+    }
+
+    func discardTemporaryFile(_ temporaryFile: TemporaryFile) throws {
+        try validateOwner(of: temporaryFile)
+        let rootDescriptor = try rootDescriptor()
+        switch try removeMatchingSource(temporaryFile, from: rootDescriptor) {
+        case .missing:
+            return
+        case .changed:
+            throw StoreError.invalidSource(temporaryFile.url)
+        case .matches:
+            return
+        }
+    }
+
+    func cleanupStaleFiles() throws {
+        let descriptor = try rootDescriptor()
+        for name in try entryNames(in: descriptor) {
+            try removeEntry(named: name, from: descriptor)
+        }
+    }
+
+    func capacityPolicy() throws -> CapacityPolicy {
+        let capacity = try availableCapacity()
+        if capacity >= Self.minimumStartCapacityBytes { return .canStart }
+        if capacity < Self.minimumContinueCapacityBytes { return .mustStop }
+        return .continue
+    }
+
+    private func validateOwner(of temporaryFile: TemporaryFile) throws {
+        guard temporaryFile.ownerID == ownerID else {
+            throw StoreError.foreignTemporaryFile
+        }
+    }
+
+    private func validateOpenTemporaryFile(_ temporaryFile: TemporaryFile) throws {
+        try temporaryFile.withFileDescriptor { descriptor in
+            var status = stat()
+            guard fstat(descriptor, &status) == 0,
+                  status.st_mode & S_IFMT == S_IFREG,
+                  status.st_dev == temporaryFile.device,
+                  status.st_ino == temporaryFile.inode else {
+                throw StoreError.invalidSource(temporaryFile.url)
+            }
+        }
+    }
+
+    private func entryIdentity(
+        of temporaryFile: TemporaryFile,
+        in rootDescriptor: Int32
+    ) throws -> EntryIdentity {
+        var status = stat()
+        let result = temporaryFile.name.withCString {
+            fstatat(rootDescriptor, $0, &status, AT_SYMLINK_NOFOLLOW)
+        }
+        if result != 0 {
+            if errno == ENOENT { return .missing }
+            throw StoreError.systemCall("fstatat source", errno)
+        }
+        guard status.st_mode & S_IFMT == S_IFREG,
+              status.st_dev == temporaryFile.device,
+              status.st_ino == temporaryFile.inode else {
+            return .changed
+        }
+        return .matches
+    }
+
+    /// Atomically moves the current logical leaf out of its well-known name before
+    /// checking identity, so a replacement leaf is never passed to `unlinkat`.
+    private func removeMatchingSource(
+        _ temporaryFile: TemporaryFile,
+        from rootDescriptor: Int32
+    ) throws -> EntryIdentity {
+        let guardName = ".gifpro-cleanup-\(UUID().uuidString)"
+        let guardDescriptor = guardName.withCString {
+            openat(
+                rootDescriptor,
+                $0,
+                O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+                mode_t(S_IRUSR | S_IWUSR)
+            )
+        }
+        guard guardDescriptor >= 0 else {
+            throw StoreError.systemCall("openat cleanup guard", errno)
+        }
+        var guardStatus = stat()
+        guard fstat(guardDescriptor, &guardStatus) == 0 else {
+            let code = errno
+            close(guardDescriptor)
+            _ = guardName.withCString { unlinkat(rootDescriptor, $0, 0) }
+            throw StoreError.systemCall("fstat cleanup guard", code)
+        }
+        close(guardDescriptor)
+
+        var guardNeedsRemoval = true
+        defer {
+            if guardNeedsRemoval {
+                _ = guardName.withCString { unlinkat(rootDescriptor, $0, 0) }
+            }
+        }
+
+        let swapResult = renameSwap(
+            directoryDescriptor: rootDescriptor,
+            firstName: temporaryFile.name,
+            secondName: guardName
+        )
+        if swapResult != 0 {
+            if errno == ENOENT { return .missing }
+            throw StoreError.systemCall("renameatx_np isolate source", errno)
+        }
+
+        let isolatedIdentity: EntryIdentity
+        do {
+            isolatedIdentity = try identity(
+                named: guardName,
+                device: temporaryFile.device,
+                inode: temporaryFile.inode,
+                in: rootDescriptor
+            )
+        } catch {
+            if renameSwap(
+                directoryDescriptor: rootDescriptor,
+                firstName: temporaryFile.name,
+                secondName: guardName
+            ) != 0 {
+                guardNeedsRemoval = false
+            }
+            throw error
+        }
+        guard isolatedIdentity == .matches else {
+            guard renameSwap(
+                directoryDescriptor: rootDescriptor,
+                firstName: temporaryFile.name,
+                secondName: guardName
+            ) == 0 else {
+                guardNeedsRemoval = false
+                throw StoreError.systemCall("renameatx_np restore changed source", errno)
+            }
+            return .changed
+        }
+
+        do {
+            try fileOperations.unlinkSource(rootDescriptor, guardName)
+            guardNeedsRemoval = false
+        } catch {
+            if renameSwap(
+                directoryDescriptor: rootDescriptor,
+                firstName: temporaryFile.name,
+                secondName: guardName
+            ) != 0 {
+                guardNeedsRemoval = false
+            }
+            throw error
+        }
+
+        let placeholderIdentity = try identity(
+            named: temporaryFile.name,
+            device: guardStatus.st_dev,
+            inode: guardStatus.st_ino,
+            in: rootDescriptor
+        )
+        guard placeholderIdentity == .matches else {
+            throw StoreError.invalidSource(temporaryFile.url)
+        }
+        let placeholderRemoval = temporaryFile.name.withCString {
+            unlinkat(rootDescriptor, $0, 0)
+        }
+        guard placeholderRemoval == 0 else {
+            throw StoreError.systemCall("unlinkat cleanup placeholder", errno)
+        }
+        return .matches
+    }
+
+    private func identity(
+        named name: String,
+        device: dev_t,
+        inode: ino_t,
+        in directoryDescriptor: Int32
+    ) throws -> EntryIdentity {
+        var status = stat()
+        let result = name.withCString {
+            fstatat(directoryDescriptor, $0, &status, AT_SYMLINK_NOFOLLOW)
+        }
+        if result != 0 {
+            if errno == ENOENT { return .missing }
+            throw StoreError.systemCall("fstatat isolated source", errno)
+        }
+        guard status.st_mode & S_IFMT == S_IFREG,
+              status.st_dev == device,
+              status.st_ino == inode else {
+            return .changed
+        }
+        return .matches
+    }
+
+    private func renameSwap(
+        directoryDescriptor: Int32,
+        firstName: String,
+        secondName: String
+    ) -> Int32 {
+        firstName.withCString { firstPath in
+            secondName.withCString { secondPath in
+                renameatx_np(
+                    directoryDescriptor,
+                    firstPath,
+                    directoryDescriptor,
+                    secondPath,
+                    UInt32(RENAME_SWAP)
                 )
             }
         }
-        guard replaceResult == 0 else {
-            throw StoreError.systemCall("renameat staging", errno)
-        }
-        stagingNeedsRemoval = false
-        _ = fsync(destinationDirectoryDescriptor)
+    }
 
-        let unlinkResult = sourceName.withCString {
-            unlinkat(rootDescriptor, $0, 0)
+    private func rootDescriptor() throws -> Int32 {
+        descriptorLock.lock()
+        defer { descriptorLock.unlock() }
+        if let descriptor = pinnedRootDescriptor { return descriptor }
+
+        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let descriptor = rootURL.path.withCString {
+            open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         }
-        guard unlinkResult == 0 else {
-            throw StoreError.systemCall("unlinkat source", errno)
+        guard descriptor >= 0 else {
+            throw StoreError.systemCall("open root", errno)
         }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0,
+              status.st_mode & S_IFMT == S_IFDIR else {
+            let code = errno
+            close(descriptor)
+            throw StoreError.systemCall("fstat root", code)
+        }
+        pinnedRootDescriptor = descriptor
+        return descriptor
     }
 
     private func entryNames(in descriptor: Int32) throws -> [String] {
         let duplicate = dup(descriptor)
-        guard duplicate >= 0 else {
-            throw StoreError.systemCall("dup", errno)
-        }
+        guard duplicate >= 0 else { throw StoreError.systemCall("dup", errno) }
         guard let directory = fdopendir(duplicate) else {
             let code = errno
             close(duplicate)
@@ -344,9 +568,7 @@ final class TemporaryFileStore {
                     String(cString: $0)
                 }
             }
-            if name != ".", name != ".." {
-                names.append(name)
-            }
+            if name != ".", name != ".." { names.append(name) }
         }
         return names
     }
@@ -389,16 +611,15 @@ final class TemporaryFileStore {
 
     private static func copyFileBytes(sourceDescriptor: Int32, destinationDescriptor: Int32) throws {
         var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+        var offset: off_t = 0
         while true {
             let bytesRead = buffer.withUnsafeMutableBytes {
-                read(sourceDescriptor, $0.baseAddress, $0.count)
+                pread(sourceDescriptor, $0.baseAddress, $0.count, offset)
             }
-            if bytesRead == 0 {
-                return
-            }
+            if bytesRead == 0 { return }
             if bytesRead < 0 {
                 if errno == EINTR { continue }
-                throw StoreError.systemCall("read", errno)
+                throw StoreError.systemCall("pread", errno)
             }
 
             var bytesWritten = 0
@@ -416,6 +637,7 @@ final class TemporaryFileStore {
                 }
                 bytesWritten += result
             }
+            offset += off_t(bytesRead)
         }
     }
 }
