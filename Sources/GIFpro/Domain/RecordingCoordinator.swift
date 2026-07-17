@@ -1,3 +1,4 @@
+import Darwin
 import CoreGraphics
 import CoreMedia
 import Foundation
@@ -74,7 +75,13 @@ protocol RecordingEncoding: AnyObject, Sendable {
 }
 
 @MainActor protocol RecordingPreviewPresenting: AnyObject {
-    func present(url: URL, notice: RecordingCompletionNotice?)
+    func present(
+        file: TemporaryFile,
+        metadata: GIFPreviewMetadata,
+        notice: RecordingCompletionNotice?,
+        actions: SaveAndPreviewActions
+    ) throws
+    func dismiss()
 }
 
 protocol RecordingClock: Sendable {
@@ -236,7 +243,10 @@ final class RecordingCoordinator: ObservableObject {
         }
         settings = preferences.load()
         transition(to: .selecting)
-        let sessionToken = token
+        showSelection(for: token)
+    }
+
+    private func showSelection(for sessionToken: UUID) {
         selection.show(
             settings: settings,
             onSettingsChanged: { [weak self] value in
@@ -510,10 +520,30 @@ final class RecordingCoordinator: ObservableObject {
             do {
                 let file = try await encoder.finish(at: finishTime)
                 cancelRuntimeTasks()
-                let url = try temporaryFiles.validatedAccessURL(for: file)
                 self.encoder = nil
-                transition(to: .previewReady(url))
-                preview.present(url: url, notice: completionNotice)
+                let identityURL = previewIdentityURL(for: file)
+                let pixelSize = region?.outputPixelSize ?? .zero
+                let actualDuration = max(
+                    elapsedSeconds,
+                    recordingStartTime.map { max(0, clock.now() - $0) } ?? 0
+                )
+                let metadata = GIFPreviewMetadata(
+                    pixelWidth: Int(pixelSize.width.rounded()),
+                    pixelHeight: Int(pixelSize.height.rounded()),
+                    duration: actualDuration,
+                    fileSize: temporaryFileSize(file)
+                )
+                transition(to: .previewReady(identityURL))
+                try preview.present(
+                    file: file,
+                    metadata: metadata,
+                    notice: completionNotice,
+                    actions: previewActions(
+                        token: sessionToken,
+                        file: file,
+                        identityURL: identityURL
+                    )
+                )
                 selection.dismiss()
             } catch {
                 discardActiveFile()
@@ -530,6 +560,7 @@ final class RecordingCoordinator: ObservableObject {
         switch state {
         case .previewReady, .awaitingSave:
             transition(to: .discarding)
+            preview.dismiss()
             discardActiveFile()
             transition(to: .idle)
         case .failed:
@@ -575,6 +606,93 @@ final class RecordingCoordinator: ObservableObject {
             return
         }
         state = next
+    }
+
+    private func previewActions(
+        token sessionToken: UUID,
+        file sessionFile: TemporaryFile,
+        identityURL: URL
+    ) -> SaveAndPreviewActions {
+        SaveAndPreviewActions(
+            saveBegan: { [weak self] in
+                guard let self,
+                      self.token == sessionToken,
+                      self.activeFile === sessionFile,
+                      self.state == .previewReady(identityURL) else { return }
+                self.transition(to: .awaitingSave(identityURL))
+            },
+            saveCancelled: { [weak self] in
+                self?.returnToPreview(
+                    token: sessionToken,
+                    file: sessionFile,
+                    identityURL: identityURL
+                )
+            },
+            saveFailed: { [weak self] _ in
+                self?.returnToPreview(
+                    token: sessionToken,
+                    file: sessionFile,
+                    identityURL: identityURL
+                )
+            },
+            saved: { [weak self] destinationURL in
+                guard let self,
+                      self.token == sessionToken,
+                      self.activeFile === sessionFile,
+                      self.state == .awaitingSave(identityURL) else { return }
+                self.activeFile = nil
+                self.transition(to: .savedPreview(destinationURL))
+                self.transition(to: .idle)
+                self.resetSession()
+            },
+            rerecord: { [weak self] in
+                guard let self,
+                      self.token == sessionToken,
+                      self.activeFile === sessionFile,
+                      self.state == .previewReady(identityURL) else { return }
+                self.activeFile = nil
+                self.beginSelectionFromPreview()
+            },
+            discarded: { [weak self] in
+                guard let self,
+                      self.token == sessionToken,
+                      self.activeFile === sessionFile,
+                      self.state == .previewReady(identityURL) else { return }
+                self.activeFile = nil
+                self.transition(to: .discarding)
+                self.transition(to: .idle)
+                self.resetSession()
+            }
+        )
+    }
+
+    private func returnToPreview(token sessionToken: UUID, file: TemporaryFile, identityURL: URL) {
+        guard token == sessionToken,
+              activeFile === file,
+              state == .awaitingSave(identityURL) else { return }
+        transition(to: .previewReady(identityURL))
+    }
+
+    private func beginSelectionFromPreview() {
+        guard permission.requestAccessIfNeeded() else {
+            transition(to: .failed(.permissionDenied))
+            return
+        }
+        resetSession()
+        settings = preferences.load()
+        transition(to: .selecting)
+        showSelection(for: token)
+    }
+
+    private func previewIdentityURL(for file: TemporaryFile) -> URL {
+        URL(string: "gifpro-temp://\(file.name)")!
+    }
+
+    private func temporaryFileSize(_ file: TemporaryFile) -> Int64 {
+        file.withFileDescriptor { descriptor in
+            var status = stat()
+            return fstat(descriptor, &status) == 0 ? Int64(status.st_size) : 0
+        }
     }
 }
 

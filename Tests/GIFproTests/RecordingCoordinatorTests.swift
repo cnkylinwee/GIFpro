@@ -5,6 +5,70 @@ import XCTest
 
 @MainActor
 final class RecordingCoordinatorTests: XCTestCase {
+    func testPreviewSaveCallbacksFollowCancelRetryAndSuccessStateLoop() async {
+        let harness = try! Harness()
+        await harness.startRecording()
+        await harness.coordinator.stop(reason: .manual)
+
+        harness.preview.beginSave()
+        guard case .awaitingSave = harness.coordinator.state else {
+            return XCTFail("expected awaitingSave")
+        }
+        harness.preview.cancelSave()
+        guard case .previewReady = harness.coordinator.state else {
+            return XCTFail("expected previewReady after cancel")
+        }
+
+        harness.preview.beginSave()
+        harness.preview.failSave()
+        guard case .previewReady = harness.coordinator.state else {
+            return XCTFail("expected previewReady after move failure")
+        }
+
+        harness.preview.beginSave()
+        let destination = URL(fileURLWithPath: "/tmp/saved.gif")
+        harness.preview.completeSave(destination)
+        XCTAssertEqual(harness.coordinator.state, .idle)
+        XCTAssertEqual(harness.tempStore.discardCount, 0)
+    }
+
+    func testPreviewRerecordAndDiscardCallbacksClearCoordinatorOwnership() async {
+        let rerecord = try! Harness()
+        await rerecord.startRecording()
+        await rerecord.coordinator.stop(reason: .manual)
+        rerecord.preview.requestRerecord()
+        XCTAssertEqual(rerecord.coordinator.state, .selecting)
+        XCTAssertEqual(rerecord.selection.showCount, 2)
+
+        let discard = try! Harness()
+        await discard.startRecording()
+        await discard.coordinator.stop(reason: .manual)
+        discard.preview.completeDiscard()
+        XCTAssertEqual(discard.coordinator.state, .idle)
+    }
+
+    func testPreviewPresentationFailureDiscardsTemporaryOutput() async {
+        let harness = try! Harness(previewFailure: true)
+        await harness.startRecording()
+
+        await harness.coordinator.stop(reason: .manual)
+
+        XCTAssertEqual(harness.coordinator.state, .failed(.finalizationFailed))
+        XCTAssertEqual(harness.tempStore.discardCount, 1)
+    }
+
+    func testRerecordRechecksPermissionBeforeShowingSelection() async {
+        let harness = try! Harness()
+        await harness.startRecording()
+        await harness.coordinator.stop(reason: .manual)
+        harness.permissions.granted = false
+
+        harness.preview.requestRerecord()
+
+        XCTAssertEqual(harness.coordinator.state, .failed(.permissionDenied))
+        XCTAssertEqual(harness.selection.showCount, 1)
+    }
+
     func testDeniedPermissionDoesNotShowSelection() async {
         let harness = try! Harness(permission: false)
         await harness.coordinator.toggleRecording()
@@ -87,7 +151,7 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.capture.stopCount, 1)
         XCTAssertEqual(harness.encoder.finishCount, 1)
         XCTAssertEqual(harness.coordinator.stopReason, .manual)
-        XCTAssertEqual(harness.events, ["visual-stopping", "capture-stop", "encoder-finish", "validate", "preview"])
+        XCTAssertEqual(harness.events, ["visual-stopping", "capture-stop", "encoder-finish", "preview"])
         guard case .previewReady = harness.coordinator.state else { return XCTFail("expected preview") }
     }
 
@@ -184,7 +248,7 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(harness.encoder.finishTimestamp ?? -.infinity, 100)
         XCTAssertEqual(
             harness.events,
-            ["visual-stopping", "capture-stop", "encoder-finish", "validate", "preview"]
+            ["visual-stopping", "capture-stop", "encoder-finish", "preview"]
         )
     }
 
@@ -537,12 +601,12 @@ private final class Harness {
     let recorder = EventRecorder()
     let region = CaptureRegion(displayID: 42, globalRect: .init(x: 0, y: 0, width: 100, height: 80), sourceRect: .init(x: 0, y: 0, width: 100, height: 80), logicalPixelSize: .init(width: 100, height: 80), outputPixelSize: .init(width: 100, height: 80), backingScale: 1)
 
-    init(permission: Bool = true, settings: RecordingSettings = .default, capacity: TemporaryFileStore.CapacityPolicy = .canStart, capacityError: Bool = false, encoderFailure: Bool = false, finishFailure: Bool = false, suspendCaptureStart: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseCaptureStartOnStop: Bool = true, captureStartError: Error? = nil, appendFailure: Bool = false, frameDuringStopPTS: TimeInterval? = nil, stopRequestScheduler: (any RecordingStopRequestScheduling)? = nil) throws {
+    init(permission: Bool = true, settings: RecordingSettings = .default, capacity: TemporaryFileStore.CapacityPolicy = .canStart, capacityError: Bool = false, encoderFailure: Bool = false, finishFailure: Bool = false, suspendCaptureStart: Bool = false, frameBeforeStartReturnPTS: TimeInterval? = nil, releaseCaptureStartOnStop: Bool = true, captureStartError: Error? = nil, appendFailure: Bool = false, frameDuringStopPTS: TimeInterval? = nil, previewFailure: Bool = false, stopRequestScheduler: (any RecordingStopRequestScheduling)? = nil) throws {
         permissions = FakePermissions(granted: permission)
         capture = FakeCapture(events: recorder, suspendStart: suspendCaptureStart, frameBeforeStartReturnPTS: frameBeforeStartReturnPTS, releaseStartOnStop: releaseCaptureStartOnStop, startError: captureStartError, frameDuringStopPTS: frameDuringStopPTS)
         tempStore = try FakeTempStore(events: recorder, capacity: capacity, capacityError: capacityError)
         preferences = FakePreferences(settings: settings)
-        preview = FakePreview(events: recorder)
+        preview = FakePreview(events: recorder, shouldFail: previewFailure)
         encoder = FakeEncoder(file: try tempStore.make(), events: recorder, finishFailure: finishFailure, appendFailure: appendFailure)
         let secondEncoder = FakeEncoder(file: try tempStore.make(), events: recorder, finishFailure: finishFailure, appendFailure: appendFailure)
         encoderFactory = FakeEncoderFactory(encoders: [encoder, secondEncoder], shouldFail: encoderFailure)
@@ -580,7 +644,7 @@ private final class EventRecorder: @unchecked Sendable { var values: [String] = 
 private struct FakeError: Error {}
 
 @MainActor private final class FakePermissions: RecordingPermissionAuthorizing {
-    let granted: Bool; var recheckCount = 0
+    var granted: Bool; var recheckCount = 0
     init(granted: Bool) { self.granted = granted }
     func requestAccessIfNeeded() -> Bool { granted }
     func recheckAccess() -> Bool { recheckCount += 1; return granted }
@@ -668,9 +732,22 @@ private final class FakeEncoder: RecordingEncoding, @unchecked Sendable {
 }
 
 @MainActor private final class FakePreview: RecordingPreviewPresenting {
-    let events: EventRecorder; var notices: [RecordingCompletionNotice?] = []
-    init(events: EventRecorder) { self.events = events }
-    func present(url: URL, notice: RecordingCompletionNotice?) { events.values.append("preview"); notices.append(notice) }
+    let events: EventRecorder; let shouldFail: Bool; var notices: [RecordingCompletionNotice?] = []
+    var actions: SaveAndPreviewActions?
+    init(events: EventRecorder, shouldFail: Bool = false) { self.events = events; self.shouldFail = shouldFail }
+    func present(file: TemporaryFile, metadata: GIFPreviewMetadata, notice: RecordingCompletionNotice?, actions: SaveAndPreviewActions) throws {
+        events.values.append("preview")
+        if shouldFail { throw FakeError() }
+        notices.append(notice)
+        self.actions = actions
+    }
+    func dismiss() { actions = nil }
+    func beginSave() { actions?.saveBegan() }
+    func cancelSave() { actions?.saveCancelled() }
+    func failSave() { actions?.saveFailed(FakeError()) }
+    func completeSave(_ url: URL) { actions?.saved(url) }
+    func requestRerecord() { actions?.rerecord() }
+    func completeDiscard() { actions?.discarded() }
 }
 
 private final class ManualRecordingClock: RecordingClock, @unchecked Sendable {

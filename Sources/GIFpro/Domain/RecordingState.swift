@@ -76,21 +76,21 @@ enum RecordingState: Equatable, Sendable {
 
         case .previewReady(let temporaryFile):
             switch next {
-            case .selecting, .discarding: return true
+            case .selecting, .discarding, .failed: return true
             case .awaitingSave(let nextTemporaryFile):
                 return temporaryFile == nextTemporaryFile
             case .idle, .requestingPermission, .countingDown, .recording,
-                 .finalizing, .previewReady, .savedPreview, .cancelling, .failed:
+                 .finalizing, .previewReady, .savedPreview, .cancelling:
                 return false
             }
 
         case .awaitingSave(let temporaryFile):
             switch next {
-            case .savedPreview, .failed: return true
+            case .savedPreview, .failed, .discarding: return true
             case .previewReady(let nextTemporaryFile):
                 return temporaryFile == nextTemporaryFile
             case .idle, .requestingPermission, .selecting, .countingDown,
-                 .recording, .finalizing, .awaitingSave, .discarding, .cancelling:
+                 .recording, .finalizing, .awaitingSave, .cancelling:
                 return false
             }
 

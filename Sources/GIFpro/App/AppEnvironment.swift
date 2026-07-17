@@ -13,7 +13,15 @@ final class AppEnvironment {
         let processor = ProductionFrameProcessor()
         let temporaryFiles = TemporaryFileStore()
         let preferences = PreferencesStore()
-        let preview = PlaceholderPreviewSink()
+        let previewWindow = GIFPreviewWindowController()
+        let savePanel = AppKitGIFSavePanelPresenter(previewWindow: previewWindow)
+        let systemQuickLook = SystemQuickLookController()
+        let preview = SaveAndPreviewController(
+            temporaryFiles: temporaryFiles,
+            previewWindow: previewWindow,
+            savePanel: savePanel,
+            systemQuickLook: systemQuickLook
+        )
         let encoderFactory = GIFEncoderFactory(store: temporaryFiles)
 
         self.permissionService = permissionService
@@ -106,14 +114,6 @@ private actor GIFRecordingEncoder: RecordingEncoding {
 
     func finish(at timestamp: TimeInterval) async throws -> TemporaryFile {
         try await encoder.finish(at: timestamp)
-    }
-}
-
-@MainActor
-private final class PlaceholderPreviewSink: RecordingPreviewPresenting {
-    func present(url: URL, notice: RecordingCompletionNotice?) {
-        // Task 11 replaces this explicit no-UI boundary with the preview workflow.
-        _ = (url, notice)
     }
 }
 
