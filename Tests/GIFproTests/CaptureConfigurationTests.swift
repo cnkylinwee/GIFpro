@@ -1,5 +1,6 @@
 import CoreMedia
 import CoreVideo
+import ScreenCaptureKit
 import XCTest
 @testable import GIFpro
 
@@ -95,5 +96,30 @@ final class ShareableContentSelectionTests: XCTestCase {
         ) { error in
             XCTAssertEqual(error as? CaptureError, .selfApplicationUnavailable(processID: 200))
         }
+    }
+}
+
+final class CaptureErrorMappingTests: XCTestCase {
+    func testSystemStoppedStreamErrorIsNotReportedAsDisplayRemoval() {
+        let error = NSError(
+            domain: SCStreamErrorDomain,
+            code: -3821,
+            userInfo: [NSLocalizedDescriptionKey: "system stopped stream"]
+        )
+
+        XCTAssertEqual(CaptureError.wrapping(error), .systemStopped)
+    }
+
+    func testNonScreenCaptureErrorPreservesCodeAndDiagnostic() {
+        let error = NSError(
+            domain: "CaptureTest",
+            code: 91,
+            userInfo: [NSLocalizedDescriptionKey: "transport failed"]
+        )
+
+        XCTAssertEqual(
+            CaptureError.wrapping(error),
+            .streamFailure(code: 91, message: "transport failed")
+        )
     }
 }

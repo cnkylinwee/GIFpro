@@ -5,11 +5,12 @@ import XCTest
 
 private actor SlowFrameConsumer {
     private var continuations: [CheckedContinuation<Void, Never>] = []
-    private(set) var startedCount = 0
+    private(set) var startedTimes: [CMTimeValue] = []
+
+    var startedCount: Int { startedTimes.count }
 
     func consume(_ frame: CapturedFrame) async throws {
-        _ = frame
-        startedCount += 1
+        startedTimes.append(frame.presentationTime.value)
         await withCheckedContinuation { continuation in
             continuations.append(continuation)
         }
@@ -30,24 +31,30 @@ private actor SlowFrameConsumer {
 }
 
 final class CaptureDeliveryTests: XCTestCase {
-    func testSlowConsumerLimitsInflightFramesAndRecoversAfterRelease() async throws {
+    func testSlowConsumerProcessesBoundedFramesInArrivalOrder() async throws {
         let consumer = SlowFrameConsumer()
         let delivery = FrameDelivery(capacity: 2) { frame in
             try await consumer.consume(frame)
         }
-        let frame = try makeFrame()
+        let first = try makeFrame(timeValue: 1)
+        let second = try makeFrame(timeValue: 2)
+        let third = try makeFrame(timeValue: 3)
 
-        XCTAssertTrue(delivery.offer(frame))
-        XCTAssertTrue(delivery.offer(frame))
-        XCTAssertFalse(delivery.offer(frame))
-        await waitUntil { await consumer.startedCount == 2 }
+        XCTAssertTrue(delivery.offer(first))
+        XCTAssertTrue(delivery.offer(second))
+        XCTAssertFalse(delivery.offer(third))
+        await waitUntil { await consumer.startedCount == 1 }
+        for _ in 0 ..< 20 { await Task.yield() }
+        let startedBeforeRelease = await consumer.startedTimes
+        XCTAssertEqual(startedBeforeRelease, [1])
         XCTAssertEqual(delivery.snapshot.inUse, 2)
 
+        delivery.stopAccepting()
+        XCTAssertFalse(delivery.offer(third))
         await consumer.releaseOne()
-        await waitUntil { delivery.snapshot.inUse == 1 }
-        XCTAssertTrue(delivery.offer(frame))
-        await waitUntil { await consumer.startedCount == 3 }
-        XCTAssertEqual(delivery.snapshot.inUse, 2)
+        await waitUntil { await consumer.startedCount == 2 }
+        let startedAfterRelease = await consumer.startedTimes
+        XCTAssertEqual(startedAfterRelease, [1, 2])
 
         await consumer.releaseAll()
         await delivery.waitUntilDrained()
@@ -72,7 +79,7 @@ final class CaptureDeliveryTests: XCTestCase {
         XCTAssertEqual(delivery.snapshot.inUse, 0)
     }
 
-    private func makeFrame() throws -> CapturedFrame {
+    private func makeFrame(timeValue: CMTimeValue = 1) throws -> CapturedFrame {
         var pixelBuffer: CVPixelBuffer?
         let status = CVPixelBufferCreate(
             kCFAllocatorDefault,
@@ -85,7 +92,7 @@ final class CaptureDeliveryTests: XCTestCase {
         XCTAssertEqual(status, kCVReturnSuccess)
         return CapturedFrame(
             pixelBuffer: try XCTUnwrap(pixelBuffer),
-            presentationTime: CMTime(value: 1, timescale: 12)
+            presentationTime: CMTime(value: timeValue, timescale: 12)
         )
     }
 

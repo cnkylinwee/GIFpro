@@ -8,6 +8,7 @@ enum CaptureError: Error, Equatable, Sendable {
     case alreadyRunning
     case startCancelled
     case displayRemoved
+    case systemStopped
     case shareableContentFailure(message: String)
     case streamFailure(code: Int, message: String)
 
@@ -17,7 +18,7 @@ enum CaptureError: Error, Equatable, Sendable {
         }
         let nsError = error as NSError
         if nsError.domain == SCStreamErrorDomain, nsError.code == -3821 {
-            return .displayRemoved
+            return .systemStopped
         }
         return .streamFailure(code: nsError.code, message: nsError.localizedDescription)
     }
@@ -101,6 +102,8 @@ final class FrameDelivery: @unchecked Sendable {
     private let consumer: Consumer
     private let lock = NSLock()
     private var isAccepting = true
+    private var queuedFrames: [CapturedFrame] = []
+    private var isWorkerRunning = false
 
     init(capacity: Int = 2, consumer: @escaping Consumer) {
         backpressure = FrameBackpressure(capacity: capacity)
@@ -113,16 +116,22 @@ final class FrameDelivery: @unchecked Sendable {
 
     @discardableResult
     func offer(_ frame: CapturedFrame) -> Bool {
+        let shouldStartWorker: Bool
+
         lock.lock()
         guard isAccepting, backpressure.tryAcquire() else {
             lock.unlock()
             return false
         }
+        queuedFrames.append(frame)
+        shouldStartWorker = !isWorkerRunning
+        if shouldStartWorker {
+            isWorkerRunning = true
+        }
         lock.unlock()
 
-        Task {
-            defer { backpressure.release() }
-            _ = try? await consumer(frame)
+        if shouldStartWorker {
+            Task { await runWorker() }
         }
         return true
     }
@@ -135,6 +144,23 @@ final class FrameDelivery: @unchecked Sendable {
 
     func waitUntilDrained() async {
         await backpressure.waitUntilDrained()
+    }
+
+    private func runWorker() async {
+        while let frame = nextFrame() {
+            _ = try? await consumer(frame)
+            backpressure.release()
+        }
+    }
+
+    private func nextFrame() -> CapturedFrame? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !queuedFrames.isEmpty else {
+            isWorkerRunning = false
+            return nil
+        }
+        return queuedFrames.removeFirst()
     }
 }
 
@@ -381,7 +407,6 @@ actor CaptureEngine {
                 }
             }
             context.delivery?.stopAccepting()
-            _ = startCleanupTask(for: context)
             await withCheckedContinuation { continuation in
                 context.completionWaiters.append(continuation)
             }
@@ -455,7 +480,6 @@ actor CaptureEngine {
                 context.cancellation = .termination(error)
             }
             context.delivery?.stopAccepting()
-            _ = startCleanupTask(for: context)
             return
         }
         guard case .running(let context) = lifecycle, context.id == token else { return }

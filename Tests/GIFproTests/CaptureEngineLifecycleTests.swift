@@ -211,10 +211,14 @@ private final class AutoTerminatingSessionBuilder: CaptureSessionBuilding, @unch
 }
 
 private actor SuspendedStartSession: CaptureSession {
+    enum PrematureStop: Error { case startIsPending }
+
     private let onFailure: @Sendable (CaptureError) -> Void
     private var startContinuation: CheckedContinuation<Void, Never>?
     private(set) var startIsPending = false
+    private(set) var prematureStopCount = 0
     private(set) var stopCount = 0
+    private(set) var events: [String] = []
 
     init(onFailure: @escaping @Sendable (CaptureError) -> Void) {
         self.onFailure = onFailure
@@ -225,10 +229,18 @@ private actor SuspendedStartSession: CaptureSession {
         await withCheckedContinuation { continuation in
             startContinuation = continuation
         }
+        startIsPending = false
+        events.append("start settled")
     }
 
     func stop() async throws {
+        guard !startIsPending else {
+            prematureStopCount += 1
+            throw PrematureStop.startIsPending
+        }
         stopCount += 1
+        events.append("stop capture")
+        events.append("remove output")
     }
 
     func terminateTwice() {
@@ -379,7 +391,9 @@ final class CaptureEngineLifecycleTests: XCTestCase {
         await waitUntil { await builder.firstSession?.startIsPending == true }
         let session = try XCTUnwrap(builder.firstSession)
         let stop = Task { await engine.stop() }
-        await waitUntil { await session.stopCount == 1 }
+        for _ in 0 ..< 20 { await Task.yield() }
+        let prematureStops = await session.prematureStopCount
+        XCTAssertEqual(prematureStops, 0)
 
         await session.terminateTwice()
         await session.finishStart()
@@ -392,6 +406,8 @@ final class CaptureEngineLifecycleTests: XCTestCase {
         XCTAssertTrue(externalFailures.isEmpty)
         let stopCount = await session.stopCount
         XCTAssertEqual(stopCount, 1)
+        let events = await session.events
+        XCTAssertEqual(events, ["start settled", "stop capture", "remove output"])
 
         try await engine.start(region: region, settings: .default) { _ in }
         await engine.stop()
