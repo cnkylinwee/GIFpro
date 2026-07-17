@@ -150,6 +150,133 @@ private final class TerminatingSessionBuilder: CaptureSessionBuilding, @unchecke
     }
 }
 
+private actor AutoTerminatingSession: CaptureSession {
+    private let onFailure: @Sendable (CaptureError) -> Void
+    private(set) var stopCount = 0
+
+    init(onFailure: @escaping @Sendable (CaptureError) -> Void) {
+        self.onFailure = onFailure
+    }
+
+    func start() async throws {
+        onFailure(.displayRemoved)
+        onFailure(.displayRemoved)
+    }
+
+    func stop() async throws {
+        stopCount += 1
+    }
+}
+
+private final class AutoTerminatingSessionBuilder: CaptureSessionBuilding, @unchecked Sendable {
+    private let lock = NSLock()
+    private let retrySession: any CaptureSession
+    private var buildCount = 0
+    private var storedDelivery: FrameDelivery?
+    private var storedSession: AutoTerminatingSession?
+
+    init(retrySession: any CaptureSession) {
+        self.retrySession = retrySession
+    }
+
+    var firstDelivery: FrameDelivery? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedDelivery
+    }
+
+    var firstSession: AutoTerminatingSession? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedSession
+    }
+
+    func build(
+        selection: SelectedShareableContent,
+        configuration: SCStreamConfiguration,
+        delivery: FrameDelivery,
+        onFailure: @escaping @Sendable (CaptureError) -> Void
+    ) throws -> any CaptureSession {
+        _ = selection
+        _ = configuration
+        lock.lock()
+        defer { lock.unlock() }
+        buildCount += 1
+        guard buildCount == 1 else { return retrySession }
+        let session = AutoTerminatingSession(onFailure: onFailure)
+        storedDelivery = delivery
+        storedSession = session
+        return session
+    }
+}
+
+private actor SuspendedStartSession: CaptureSession {
+    private let onFailure: @Sendable (CaptureError) -> Void
+    private var startContinuation: CheckedContinuation<Void, Never>?
+    private(set) var startIsPending = false
+    private(set) var stopCount = 0
+
+    init(onFailure: @escaping @Sendable (CaptureError) -> Void) {
+        self.onFailure = onFailure
+    }
+
+    func start() async throws {
+        startIsPending = true
+        await withCheckedContinuation { continuation in
+            startContinuation = continuation
+        }
+    }
+
+    func stop() async throws {
+        stopCount += 1
+    }
+
+    func terminateTwice() {
+        onFailure(.displayRemoved)
+        onFailure(.displayRemoved)
+    }
+
+    func finishStart() {
+        startContinuation?.resume()
+        startContinuation = nil
+    }
+}
+
+private final class SuspendedStartSessionBuilder: CaptureSessionBuilding, @unchecked Sendable {
+    private let lock = NSLock()
+    private let retrySession: any CaptureSession
+    private var buildCount = 0
+    private var storedSession: SuspendedStartSession?
+
+    init(retrySession: any CaptureSession) {
+        self.retrySession = retrySession
+    }
+
+    var firstSession: SuspendedStartSession? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedSession
+    }
+
+    func build(
+        selection: SelectedShareableContent,
+        configuration: SCStreamConfiguration,
+        delivery: FrameDelivery,
+        onFailure: @escaping @Sendable (CaptureError) -> Void
+    ) throws -> any CaptureSession {
+        _ = selection
+        _ = configuration
+        _ = delivery
+        lock.lock()
+        defer { lock.unlock() }
+        buildCount += 1
+        guard buildCount == 1 else { return retrySession }
+        let session = SuspendedStartSession(onFailure: onFailure)
+        storedSession = session
+        return session
+    }
+}
+
 private actor BlockingStopSession: CaptureSession {
     private var stopContinuation: CheckedContinuation<Void, Never>?
     private(set) var stopStarted = false
@@ -198,6 +325,78 @@ private actor FailureProbe {
 }
 
 final class CaptureEngineLifecycleTests: XCTestCase {
+    func testDelegateTerminationBeforeStartReturnsPreventsRunningAndSurfacesThroughStart() async throws {
+        let retrySession = StubCaptureSession()
+        let builder = AutoTerminatingSessionBuilder(retrySession: retrySession)
+        let failures = FailureProbe()
+        let engine = CaptureEngine(
+            contentProvider: StubContentProvider(),
+            sessionBuilder: builder,
+            processID: 200,
+            onFailure: { error in Task { await failures.record(error) } }
+        )
+
+        var surfacedError: CaptureError?
+        do {
+            try await engine.start(region: makeRegion(), settings: .default) { _ in }
+        } catch {
+            surfacedError = error as? CaptureError
+        }
+        if surfacedError == nil { await engine.stop() }
+
+        XCTAssertEqual(surfacedError, .displayRemoved)
+        let firstSession = try XCTUnwrap(builder.firstSession)
+        let firstStopCount = await firstSession.stopCount
+        XCTAssertEqual(firstStopCount, 1)
+        XCTAssertFalse(try XCTUnwrap(builder.firstDelivery).offer(try makeFrame()))
+        for _ in 0 ..< 20 { await Task.yield() }
+        let externalFailures = await failures.errors
+        XCTAssertTrue(externalFailures.isEmpty)
+
+        try await engine.start(region: makeRegion(), settings: .default) { _ in }
+        await engine.stop()
+    }
+
+    func testStopWinsWhenDelegateTerminationArrivesAfterStartCancellation() async throws {
+        let retrySession = StubCaptureSession()
+        let builder = SuspendedStartSessionBuilder(retrySession: retrySession)
+        let failures = FailureProbe()
+        let engine = CaptureEngine(
+            contentProvider: StubContentProvider(),
+            sessionBuilder: builder,
+            processID: 200,
+            onFailure: { error in Task { await failures.record(error) } }
+        )
+        let region = makeRegion()
+        let start = Task { () -> CaptureError? in
+            do {
+                try await engine.start(region: region, settings: .default) { _ in }
+                return nil
+            } catch {
+                return error as? CaptureError
+            }
+        }
+        await waitUntil { await builder.firstSession?.startIsPending == true }
+        let session = try XCTUnwrap(builder.firstSession)
+        let stop = Task { await engine.stop() }
+        await waitUntil { await session.stopCount == 1 }
+
+        await session.terminateTwice()
+        await session.finishStart()
+        let surfacedError = await start.value
+        await stop.value
+
+        XCTAssertEqual(surfacedError, .startCancelled)
+        for _ in 0 ..< 20 { await Task.yield() }
+        let externalFailures = await failures.errors
+        XCTAssertTrue(externalFailures.isEmpty)
+        let stopCount = await session.stopCount
+        XCTAssertEqual(stopCount, 1)
+
+        try await engine.start(region: region, settings: .default) { _ in }
+        await engine.stop()
+    }
+
     func testStopDuringShareableContentLookupCancelsStartAndAllowsRetry() async throws {
         let provider = SuspendedContentProvider()
         let firstSession = StubCaptureSession()

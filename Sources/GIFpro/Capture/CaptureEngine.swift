@@ -204,9 +204,34 @@ actor CaptureEngine {
     typealias FrameConsumer = @Sendable (CapturedFrame) async throws -> Void
     typealias FailureHandler = @Sendable (CaptureError) -> Void
 
+    private final class TerminationSignal: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storedError: CaptureError?
+
+        var error: CaptureError? {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedError
+        }
+
+        func record(_ error: CaptureError) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard storedError == nil else { return false }
+            storedError = error
+            return true
+        }
+    }
+
+    private enum StartingCancellation: Equatable {
+        case stopRequested
+        case termination(CaptureError)
+    }
+
     private final class StartingContext: @unchecked Sendable {
         let id = UUID()
-        var isCancelled = false
+        let terminationSignal = TerminationSignal()
+        var cancellation: StartingCancellation?
         var session: (any CaptureSession)?
         var delivery: FrameDelivery?
         var cleanupTask: Task<Void, Never>?
@@ -287,6 +312,7 @@ actor CaptureEngine {
             let nextDelivery = FrameDelivery(capacity: 2, consumer: onFrame)
             context.delivery = nextDelivery
             let token = context.id
+            let terminationSignal = context.terminationSignal
             let nextSession: any CaptureSession
             do {
                 nextSession = try sessionBuilder.build(
@@ -297,6 +323,7 @@ actor CaptureEngine {
                     ),
                     delivery: nextDelivery,
                     onFailure: { [weak self] error in
+                        guard terminationSignal.record(error) else { return }
                         Task {
                             await self?.handleUnexpectedTermination(error, token: token)
                         }
@@ -316,10 +343,18 @@ actor CaptureEngine {
             finishStarting(context)
         } catch {
             let captureError: CaptureError
-            if context.isCancelled {
+            switch context.cancellation {
+            case .stopRequested:
                 captureError = .startCancelled
-            } else {
-                captureError = CaptureError.wrapping(error)
+            case .termination(let error):
+                captureError = error
+            case nil:
+                if let termination = context.terminationSignal.error {
+                    context.cancellation = .termination(termination)
+                    captureError = termination
+                } else {
+                    captureError = CaptureError.wrapping(error)
+                }
             }
             context.delivery?.stopAccepting()
             let cleanupTask = startCleanupTask(for: context)
@@ -338,7 +373,13 @@ actor CaptureEngine {
             return
 
         case .starting(let context):
-            context.isCancelled = true
+            if context.cancellation == nil {
+                if let termination = context.terminationSignal.error {
+                    context.cancellation = .termination(termination)
+                } else {
+                    context.cancellation = .stopRequested
+                }
+            }
             context.delivery?.stopAccepting()
             _ = startCleanupTask(for: context)
             await withCheckedContinuation { continuation in
@@ -364,8 +405,20 @@ actor CaptureEngine {
     }
 
     private func ensureStartIsActive(_ context: StartingContext) throws {
-        guard !context.isCancelled,
-              case .starting(let current) = lifecycle,
+        if let cancellation = context.cancellation {
+            switch cancellation {
+            case .stopRequested:
+                throw CaptureError.startCancelled
+            case .termination(let error):
+                throw error
+            }
+        }
+        if let termination = context.terminationSignal.error {
+            context.cancellation = .termination(termination)
+            context.delivery?.stopAccepting()
+            throw termination
+        }
+        guard case .starting(let current) = lifecycle,
               current === context
         else {
             throw CaptureError.startCancelled
@@ -397,9 +450,15 @@ actor CaptureEngine {
     }
 
     private func handleUnexpectedTermination(_ error: CaptureError, token: UUID) async {
-        guard case .running(let context) = lifecycle, context.id == token else {
+        if case .starting(let context) = lifecycle, context.id == token {
+            if context.cancellation == nil {
+                context.cancellation = .termination(error)
+            }
+            context.delivery?.stopAccepting()
+            _ = startCleanupTask(for: context)
             return
         }
+        guard case .running(let context) = lifecycle, context.id == token else { return }
         context.delivery.stopAccepting()
         let task = Task {
             try? await context.session.stop()
