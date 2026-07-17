@@ -13,6 +13,33 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertEqual(RecordingOverlayStatusContent.stopping, "正在完成…")
     }
 
+    func testAuxiliaryPanelLifecycleTracksStatusAndStopVisibility() {
+        var state = RecordingOverlayAuxiliaryState.hidden
+        XCTAssertEqual(state.phase, .hidden)
+        XCTAssertFalse(state.showsStatusPanel)
+        XCTAssertFalse(state.showsStopPanel)
+
+        state.transition(to: .countdown)
+        XCTAssertEqual(state.phase, .countdown)
+        XCTAssertTrue(state.showsStatusPanel)
+        XCTAssertFalse(state.showsStopPanel)
+
+        state.transition(to: .recording)
+        XCTAssertEqual(state.phase, .recording)
+        XCTAssertTrue(state.showsStatusPanel)
+        XCTAssertTrue(state.showsStopPanel)
+
+        state.transition(to: .stopping)
+        XCTAssertEqual(state.phase, .stopping)
+        XCTAssertTrue(state.showsStatusPanel)
+        XCTAssertFalse(state.showsStopPanel)
+
+        state.transition(to: .hidden)
+        XCTAssertEqual(state, .hidden)
+        XCTAssertFalse(state.showsStatusPanel)
+        XCTAssertFalse(state.showsStopPanel)
+    }
+
     func testControlPanelCanBecomeKeyWithoutBeingAnActivatingPanel() {
         let panel = makePanel()
 

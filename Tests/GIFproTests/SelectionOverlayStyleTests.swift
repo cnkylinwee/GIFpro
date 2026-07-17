@@ -6,20 +6,37 @@ import XCTest
 final class SelectionOverlayStyleTests: XCTestCase {
     private let selection = CGRect(x: 100, y: 80, width: 200, height: 160)
 
-    func testStyleUsesFixedPointMetricsAndSemanticColorRoles() {
-        let style = SelectionOverlayStyle()
+    func testSelectingAndRecordingStylesStoreFixedMetricsAndSemanticRoles() {
+        let selecting = SelectionOverlayStyle.selecting
+        let recording = SelectionOverlayStyle.recording
 
-        XCTAssertEqual(style.borderWidth, 2)
-        XCTAssertEqual(style.visibleHandleSize, CGSize(width: 10, height: 10))
-        XCTAssertEqual(style.handleHitSize, CGSize(width: 16, height: 16))
-        XCTAssertEqual(style.handleCornerRadius, 2)
-        XCTAssertEqual(style.borderRole(showsHandles: true), .selectionAccent)
-        XCTAssertEqual(style.borderRole(showsHandles: false), .recordingRed)
-        XCTAssertEqual(style.handleFillRole, .windowBackground)
+        XCTAssertEqual(SelectionOverlayStyle.borderWidth, 2)
+        XCTAssertEqual(SelectionOverlayStyle.visibleHandleSize, CGSize(width: 10, height: 10))
+        XCTAssertEqual(SelectionOverlayStyle.handleHitSize, CGSize(width: 16, height: 16))
+        XCTAssertEqual(SelectionOverlayStyle.handleCornerRadius, 2)
+        XCTAssertEqual(selecting.borderRole, .selectionAccent)
+        XCTAssertEqual(selecting.handleFillRole, .windowBackground)
+        XCTAssertEqual(recording.borderRole, .recordingRed)
+        XCTAssertEqual(recording.handleFillRole, .windowBackground)
+        XCTAssertNotEqual(selecting, recording)
+        XCTAssertEqual(selecting, .selecting)
+    }
+
+    func testHandleRenderDescriptorKeepsStrokedOuterBoundsAtTenPoints() {
+        let style = SelectionOverlayStyle.selecting
+        let descriptor = style.handleRenderDescriptor(for: .topLeft, selection: selection)
+        let expectedOuterFrame = CGRect(x: 95, y: 235, width: 10, height: 10)
+
+        XCTAssertEqual(descriptor.visibleOuterFrame, expectedOuterFrame)
+        XCTAssertEqual(descriptor.pathFrame, expectedOuterFrame.insetBy(dx: 1, dy: 1))
+        XCTAssertEqual(descriptor.strokeWidth, 2)
+        XCTAssertEqual(descriptor.outerCornerRadius, 2)
+        XCTAssertEqual(descriptor.pathCornerRadius, 1)
+        XCTAssertEqual(descriptor.strokedOuterBounds, expectedOuterFrame)
     }
 
     func testVisibleAndHitFramesAreCenteredOnAllEightHandleLocations() throws {
-        let style = SelectionOverlayStyle()
+        let style = SelectionOverlayStyle.selecting
         let centers: [ResizeHandle: CGPoint] = [
             .top: CGPoint(x: 200, y: 240),
             .bottom: CGPoint(x: 200, y: 80),
@@ -47,7 +64,7 @@ final class SelectionOverlayStyleTests: XCTestCase {
     }
 
     func testCornerHandleWinsWhenCornerAndEdgeHitFramesOverlap() {
-        let style = SelectionOverlayStyle()
+        let style = SelectionOverlayStyle.selecting
         let narrowSelection = CGRect(x: 100, y: 80, width: 12, height: 12)
 
         XCTAssertEqual(
@@ -97,7 +114,7 @@ final class SelectionOverlayStyleTests: XCTestCase {
 
     func testSyntheticMouseEventsResizeFromEveryHandleCenterAndHitEdge() throws {
         let translation = CGPoint(x: 11, y: 13)
-        let style = SelectionOverlayStyle()
+        let style = SelectionOverlayStyle.selecting
 
         for handle in ResizeHandle.allCases {
             let visibleFrame = style.visibleHandleFrame(for: handle, selection: selection)

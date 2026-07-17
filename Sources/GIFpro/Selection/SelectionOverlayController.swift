@@ -17,6 +17,26 @@ enum RecordingOverlayStatusContent {
     static let stopping = "正在完成…"
 }
 
+enum RecordingOverlayAuxiliaryPhase: Equatable {
+    case hidden
+    case countdown
+    case recording
+    case stopping
+}
+
+struct RecordingOverlayAuxiliaryState: Equatable {
+    private(set) var phase: RecordingOverlayAuxiliaryPhase
+
+    static let hidden = RecordingOverlayAuxiliaryState(phase: .hidden)
+
+    var showsStatusPanel: Bool { phase != .hidden }
+    var showsStopPanel: Bool { phase == .recording }
+
+    mutating func transition(to phase: RecordingOverlayAuxiliaryPhase) {
+        self.phase = phase
+    }
+}
+
 @MainActor
 final class SelectionOverlayController {
     var onSettingsChanged: ((RecordingSettings) -> Void)?
@@ -47,6 +67,7 @@ final class SelectionOverlayController {
     private var stopPanel: NSPanel?
     private var settings = RecordingSettings.default
     private var visualState = VisualState.hidden
+    private(set) var auxiliaryState = RecordingOverlayAuxiliaryState.hidden
 
     init(converter: DisplayCoordinateConverter = DisplayCoordinateConverter()) {
         self.converter = converter
@@ -79,10 +100,8 @@ final class SelectionOverlayController {
         displayMonitor.stop()
         controlPanel?.close()
         controlPanel = nil
-        statusPanel?.close()
-        statusPanel = nil
-        stopPanel?.close()
-        stopPanel = nil
+        auxiliaryState.transition(to: .hidden)
+        synchronizeAuxiliaryPanelVisibility()
         for overlay in overlays.values {
             overlay.panel.onEscape = nil
             overlay.panel.close()
@@ -95,6 +114,7 @@ final class SelectionOverlayController {
     func showCountdown(value: Int, targetDisplayID: CGDirectDisplayID) {
         guard visualState == .selecting, ownerDisplayID == targetDisplayID else { return }
         visualState = .countingDown
+        auxiliaryState.transition(to: .countdown)
         configureStatusOnlyVisualState()
         installStatusPanels(text: RecordingOverlayStatusContent.countdown(value), onStop: nil)
     }
@@ -107,6 +127,7 @@ final class SelectionOverlayController {
     func startRecordingVisualState(onStop: @escaping () -> Void) {
         guard visualState != .hidden else { return }
         visualState = .recording
+        auxiliaryState.transition(to: .recording)
         configureStatusOnlyVisualState()
         installStatusPanels(
             text: RecordingOverlayStatusContent.recording(elapsed: 0, remaining: 0),
@@ -129,8 +150,8 @@ final class SelectionOverlayController {
     func showStoppingVisualState() {
         guard visualState == .recording else { return }
         visualState = .stopping
-        stopPanel?.close()
-        stopPanel = nil
+        auxiliaryState.transition(to: .stopping)
+        synchronizeAuxiliaryPanelVisibility()
         updateStatusPanel(text: RecordingOverlayStatusContent.stopping)
     }
 
@@ -157,6 +178,7 @@ final class SelectionOverlayController {
         stopPanel?.close()
         statusPanel = nil
         stopPanel = nil
+        guard auxiliaryState.showsStatusPanel else { return }
         guard let ownerDisplayID,
               let overlay = overlays[ownerDisplayID],
               let selectionRect = overlay.view.selectionRect else { return }
@@ -176,7 +198,7 @@ final class SelectionOverlayController {
         status.orderFrontRegardless()
         statusPanel = status
 
-        guard let onStop else { return }
+        guard auxiliaryState.showsStopPanel, let onStop else { return }
         let button = NSButton(title: "停止", target: nil, action: nil)
         button.bezelStyle = .rounded
         button.bezelColor = .systemRed
@@ -186,6 +208,17 @@ final class SelectionOverlayController {
         stop.ignoresMouseEvents = RecordingOverlayMousePolicy.stopButtonIgnoresMouseEvents
         stop.orderFrontRegardless()
         stopPanel = stop
+    }
+
+    private func synchronizeAuxiliaryPanelVisibility() {
+        if !auxiliaryState.showsStatusPanel {
+            statusPanel?.close()
+            statusPanel = nil
+        }
+        if !auxiliaryState.showsStopPanel {
+            stopPanel?.close()
+            stopPanel = nil
+        }
     }
 
     private func updateStatusPanel(text: String, isWarning: Bool = false) {

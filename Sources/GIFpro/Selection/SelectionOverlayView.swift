@@ -68,23 +68,57 @@ enum SelectionOverlayColorRole: Equatable {
     }
 }
 
-struct SelectionOverlayStyle {
-    let borderWidth: CGFloat = 2
-    let visibleHandleSize = CGSize(width: 10, height: 10)
-    let handleHitSize = CGSize(width: 16, height: 16)
-    let handleCornerRadius: CGFloat = 2
-    let handleFillRole = SelectionOverlayColorRole.windowBackground
+struct SelectionHandleRenderDescriptor: Equatable {
+    let visibleOuterFrame: CGRect
+    let pathFrame: CGRect
+    let strokeWidth: CGFloat
+    let outerCornerRadius: CGFloat
+    let pathCornerRadius: CGFloat
 
-    func borderRole(showsHandles: Bool) -> SelectionOverlayColorRole {
-        showsHandles ? .selectionAccent : .recordingRed
+    var strokedOuterBounds: CGRect {
+        pathFrame.insetBy(dx: -strokeWidth / 2, dy: -strokeWidth / 2)
     }
+}
+
+struct SelectionOverlayStyle: Equatable {
+    static let borderWidth: CGFloat = 2
+    static let visibleHandleSize = CGSize(width: 10, height: 10)
+    static let handleHitSize = CGSize(width: 16, height: 16)
+    static let handleCornerRadius: CGFloat = 2
+
+    static let selecting = SelectionOverlayStyle(
+        borderRole: .selectionAccent,
+        handleFillRole: .windowBackground
+    )
+    static let recording = SelectionOverlayStyle(
+        borderRole: .recordingRed,
+        handleFillRole: .windowBackground
+    )
+
+    let borderRole: SelectionOverlayColorRole
+    let handleFillRole: SelectionOverlayColorRole
 
     func visibleHandleFrame(for handle: ResizeHandle, selection: CGRect) -> CGRect {
-        frame(size: visibleHandleSize, centeredAt: center(for: handle, selection: selection))
+        frame(size: Self.visibleHandleSize, centeredAt: center(for: handle, selection: selection))
     }
 
     func handleHitFrame(for handle: ResizeHandle, selection: CGRect) -> CGRect {
-        frame(size: handleHitSize, centeredAt: center(for: handle, selection: selection))
+        frame(size: Self.handleHitSize, centeredAt: center(for: handle, selection: selection))
+    }
+
+    func handleRenderDescriptor(
+        for handle: ResizeHandle,
+        selection: CGRect
+    ) -> SelectionHandleRenderDescriptor {
+        let visibleOuterFrame = visibleHandleFrame(for: handle, selection: selection)
+        let strokeInset = Self.borderWidth / 2
+        return SelectionHandleRenderDescriptor(
+            visibleOuterFrame: visibleOuterFrame,
+            pathFrame: visibleOuterFrame.insetBy(dx: strokeInset, dy: strokeInset),
+            strokeWidth: Self.borderWidth,
+            outerCornerRadius: Self.handleCornerRadius,
+            pathCornerRadius: max(0, Self.handleCornerRadius - strokeInset)
+        )
     }
 
     func hitHandle(at point: CGPoint, selection: CGRect) -> ResizeHandle? {
@@ -181,7 +215,6 @@ final class SelectionOverlayView: NSView {
     private var resizeHandle: ResizeHandle?
     private var resizeStartRect: CGRect?
     private var resizeStartPoint: CGPoint?
-    private let style = SelectionOverlayStyle()
     private let notificationCenter: NotificationCenter
     private let onRedrawRequested: (() -> Void)?
 
@@ -231,22 +264,23 @@ final class SelectionOverlayView: NSView {
             NSGraphicsContext.restoreGraphicsState()
         }
 
-        style.borderRole(showsHandles: showsHandles).color().setStroke()
-        let borderInset = style.borderWidth / 2
+        let style: SelectionOverlayStyle = showsHandles ? .selecting : .recording
+        style.borderRole.color().setStroke()
+        let borderInset = SelectionOverlayStyle.borderWidth / 2
         let border = NSBezierPath(rect: selectionRect.insetBy(dx: borderInset, dy: borderInset))
-        border.lineWidth = style.borderWidth
+        border.lineWidth = SelectionOverlayStyle.borderWidth
         border.stroke()
 
         for handle in ResizeHandle.allCases where showsHandles {
             style.handleFillRole.color().setFill()
-            SelectionOverlayColorRole.selectionAccent.color().setStroke()
-            let handleFrame = style.visibleHandleFrame(for: handle, selection: selectionRect)
+            style.borderRole.color().setStroke()
+            let descriptor = style.handleRenderDescriptor(for: handle, selection: selectionRect)
             let path = NSBezierPath(
-                roundedRect: handleFrame,
-                xRadius: style.handleCornerRadius,
-                yRadius: style.handleCornerRadius
+                roundedRect: descriptor.pathFrame,
+                xRadius: descriptor.pathCornerRadius,
+                yRadius: descriptor.pathCornerRadius
             )
-            path.lineWidth = style.borderWidth
+            path.lineWidth = descriptor.strokeWidth
             path.fill()
             path.stroke()
         }
@@ -328,7 +362,7 @@ final class SelectionOverlayView: NSView {
     }
 
     private func hitHandle(at point: CGPoint, selection: CGRect) -> ResizeHandle? {
-        style.hitHandle(at: point, selection: selection)
+        SelectionOverlayStyle.selecting.hitHandle(at: point, selection: selection)
     }
 
     private func observeSystemColorChanges() {
