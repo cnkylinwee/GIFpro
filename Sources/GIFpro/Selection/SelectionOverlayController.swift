@@ -160,7 +160,7 @@ final class SelectionOverlayController {
             max(globalRect.midX - panelSize.width / 2, screenFrame.minX),
             screenFrame.maxX - panelSize.width
         )
-        let panel = NSPanel(
+        let panel = SelectionControlPanel(
             contentRect: CGRect(origin: CGPoint(x: x, y: y), size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -172,13 +172,10 @@ final class SelectionOverlayController {
         panel.hasShadow = true
         panel.contentView = controls
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.ignoresMouseEvents = true
+        panel.onCancel = { [weak self] in self?.cancelSelection() }
         panel.orderFrontRegardless()
+        panel.makeKey()
         controlPanel = panel
-        Task { @MainActor [weak panel] in
-            try? await Task.sleep(for: .milliseconds(150))
-            panel?.ignoresMouseEvents = false
-        }
     }
 
     private func recordSelection() {
