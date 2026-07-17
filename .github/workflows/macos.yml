@@ -19,4 +19,4 @@ jobs:
         run: swift test --parallel
 
       - name: Verify release artifact
-        run: ./Scripts/build-app.sh release
+        run: Tests/ScriptTests/BuildAppReleaseChecksTests.sh

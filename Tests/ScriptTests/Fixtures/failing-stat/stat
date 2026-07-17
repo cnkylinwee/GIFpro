@@ -1,0 +1,7 @@
+#!/bin/sh
+
+if [ "${1:-}" = "-f" ] && [ "${2:-}" = "%z" ]; then
+    exit 71
+fi
+
+exec /usr/bin/stat "$@"

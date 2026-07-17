@@ -14,6 +14,7 @@
 | `swift test --parallel -Xswiftc -warnings-as-errors --scratch-path /tmp/GIFpro-task12-strict` | PASS；188 XCTest + 20 Swift Testing，0 failures，编译警告按错误处理 |
 | `swift build -c release --arch arm64` | PASS |
 | `./Scripts/build-app.sh release` | PASS；脚本内全部发布断言通过 |
+| `Tests/ScriptTests/BuildAppReleaseChecksTests.sh` | PASS；注入 `stat` 失败时 release 非零退出，含空格路径的正常 release 通过 |
 | `codesign --verify --deep --strict .build/app/GIFpro.app` | PASS（无诊断输出） |
 | `lipo -archs .build/app/GIFpro.app/Contents/MacOS/GIFpro` | `arm64` |
 | `du -sh .build/app/GIFpro.app` | `928K` |
