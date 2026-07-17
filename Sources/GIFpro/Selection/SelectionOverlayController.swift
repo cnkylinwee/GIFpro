@@ -66,6 +66,7 @@ final class SelectionOverlayController {
 
     private let converter: DisplayCoordinateConverter
     private let displayMonitor: DisplayConfigurationMonitor
+    private let imageLoader: any TemplateControlImageLoading
     private let auxiliaryPanelInstallationGate: (RecordingOverlayAuxiliaryPhase) -> Bool
     private var overlays: [CGDirectDisplayID: Overlay] = [:]
     private var ownerDisplayID: CGDirectDisplayID?
@@ -90,19 +91,23 @@ final class SelectionOverlayController {
 
     init(
         converter: DisplayCoordinateConverter = DisplayCoordinateConverter(),
+        imageLoader: (any TemplateControlImageLoading)? = nil,
         auxiliaryPanelInstallationGate: @escaping (RecordingOverlayAuxiliaryPhase) -> Bool = { _ in true }
     ) {
         self.converter = converter
         self.displayMonitor = DisplayConfigurationMonitor()
+        self.imageLoader = imageLoader ?? TemplateControlImageLoader()
         self.auxiliaryPanelInstallationGate = auxiliaryPanelInstallationGate
     }
 
     init(
         converter: DisplayCoordinateConverter,
-        displayMonitor: DisplayConfigurationMonitor
+        displayMonitor: DisplayConfigurationMonitor,
+        imageLoader: (any TemplateControlImageLoading)? = nil
     ) {
         self.converter = converter
         self.displayMonitor = displayMonitor
+        self.imageLoader = imageLoader ?? TemplateControlImageLoader()
         self.auxiliaryPanelInstallationGate = { _ in true }
     }
 
@@ -352,7 +357,11 @@ final class SelectionOverlayController {
     private func presentControls(for localRect: CGRect, overlay: Overlay) {
         controlPanel?.close()
         let supportsTwoX = overlay.screen.backingScaleFactor >= 2
-        let controls = SelectionControlsView(settings: settings, supportsTwoX: supportsTwoX)
+        let controls = SelectionControlsView(
+            settings: settings,
+            supportsTwoX: supportsTwoX,
+            imageLoader: imageLoader
+        )
         let previousSettings = settings
         settings = controls.settings
         if settings != previousSettings { onSettingsChanged?(settings) }

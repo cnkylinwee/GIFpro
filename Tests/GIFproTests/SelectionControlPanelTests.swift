@@ -4,6 +4,67 @@ import XCTest
 
 @MainActor
 final class SelectionControlPanelTests: XCTestCase {
+    func testTemplateControlButtonUsesFixedImageOnlyLayout() {
+        let image = NSImage(size: CGSize(width: 60, height: 60))
+        let button = TemplateControlButton(image: image, semanticTint: .accent)
+
+        XCTAssertEqual(button.title, "")
+        XCTAssertFalse(button.isBordered)
+        XCTAssertEqual(button.imagePosition, .imageOnly)
+        XCTAssertEqual(button.imageScaling, .scaleProportionallyDown)
+        XCTAssertEqual(button.image?.size, CGSize(width: 24, height: 24))
+        XCTAssertTrue(button.translatesAutoresizingMaskIntoConstraints == false)
+        XCTAssertTrue(button.constraints.contains {
+            $0.isActive && $0.firstAttribute == .width && $0.constant == 44
+        })
+        XCTAssertTrue(button.constraints.contains {
+            $0.isActive && $0.firstAttribute == .height && $0.constant == 44
+        })
+    }
+
+    func testTemplateControlButtonResolvesAccentInteractionStates() {
+        assertInteractionStates(semanticTint: .accent, normalColor: .controlAccentColor)
+    }
+
+    func testTemplateControlButtonResolvesDestructiveInteractionStates() {
+        assertInteractionStates(semanticTint: .destructive, normalColor: .systemRed)
+    }
+
+    func testTemplateControlButtonReresolvesTintAndRedrawsForLightAndDarkAppearance() throws {
+        let button = TemplateControlButton(
+            image: NSImage(size: CGSize(width: 24, height: 24)),
+            semanticTint: .accent
+        )
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let container = NSView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView = container
+        container.addSubview(button)
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+
+        for appearance in [light, dark] {
+            button.appearance = appearance
+            button.needsDisplay = false
+            let previousGeneration = button.resolvedVisualState.redrawRequestGeneration
+            button.viewDidChangeEffectiveAppearance()
+
+            XCTAssertGreaterThan(
+                button.resolvedVisualState.redrawRequestGeneration,
+                previousGeneration
+            )
+            XCTAssertEqual(button.resolvedVisualState.appearanceName, appearance.name)
+            assertColor(
+                button.resolvedVisualState.tintColor,
+                equals: resolvedColor(.controlAccentColor, appearance: appearance)
+            )
+        }
+    }
+
     func testAuxiliaryStatusContentMovesFromCountdownToRecordingAndStopping() {
         XCTAssertEqual(RecordingOverlayStatusContent.countdown(3), "3")
         XCTAssertEqual(
@@ -121,13 +182,80 @@ final class SelectionControlPanelTests: XCTestCase {
     }
 
     func testRecordButtonRetainsReturnKeyEquivalent() {
-        let controls = SelectionControlsView(settings: .default, supportsTwoX: true)
+        let loader = StubTemplateControlImageLoader()
+        let controls = SelectionControlsView(
+            settings: .default,
+            supportsTwoX: true,
+            imageLoader: loader
+        )
 
         let recordButton = controls.descendants
-            .compactMap { $0 as? NSButton }
-            .first { $0.title == "Record" }
+            .compactMap { $0 as? TemplateControlButton }
+            .first { $0.identifier?.rawValue == "gifpro.record" }
 
         XCTAssertEqual(recordButton?.keyEquivalent, "\r")
+        XCTAssertEqual(loader.loadedAssets, [.recordButton])
+    }
+
+    func testRecordButtonIsImageOnlyAccessibleAndInvokesCallback() throws {
+        let controls = SelectionControlsView(
+            settings: .default,
+            supportsTwoX: true,
+            imageLoader: StubTemplateControlImageLoader()
+        )
+        let recordButton = try XCTUnwrap(controls.descendants
+            .compactMap { $0 as? TemplateControlButton }
+            .first { $0.identifier?.rawValue == "gifpro.record" })
+        var recordCount = 0
+        controls.onRecord = { recordCount += 1 }
+
+        XCTAssertEqual(recordButton.title, "")
+        XCTAssertEqual(recordButton.accessibilityIdentifier(), "gifpro.record")
+        XCTAssertEqual(recordButton.toolTip, "开始录制")
+        XCTAssertEqual(recordButton.accessibilityLabel(), "开始录制")
+        XCTAssertEqual(recordButton.accessibilityRole(), .button)
+
+        XCTAssertTrue(recordButton.accessibilityPerformPress())
+        XCTAssertEqual(recordCount, 1)
+
+        let returnEvent = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r",
+            isARepeat: false,
+            keyCode: 36
+        ))
+        XCTAssertTrue(recordButton.performKeyEquivalent(with: returnEvent))
+        XCTAssertEqual(recordCount, 2)
+
+        recordButton.performClick(nil)
+
+        XCTAssertEqual(recordCount, 3)
+
+        recordButton.isEnabled = false
+        XCTAssertFalse(recordButton.accessibilityPerformPress())
+        recordButton.performClick(nil)
+        XCTAssertEqual(recordCount, 3)
+    }
+
+    func testControllerPassesItsInjectedLoaderToSelectionControls() throws {
+        let loader = StubTemplateControlImageLoader()
+        let controller = SelectionOverlayController(imageLoader: loader)
+        controller.show()
+        defer { controller.dismiss() }
+
+        let (_, view) = try XCTUnwrap(controller.selectionOverlayViews.first)
+        XCTAssertTrue(view.onDragBegan?() == true)
+        let selection = CGRect(x: 80, y: 80, width: 160, height: 120)
+        view.selectionRect = selection
+        view.onSelectionCompleted?(selection)
+
+        XCTAssertEqual(loader.loadedAssets, [.recordButton])
     }
 
     func testRecordingVisualsPassThroughMouseExceptNarrowStopPanel() {
@@ -153,10 +281,86 @@ final class SelectionControlPanelTests: XCTestCase {
             defer: false
         )
     }
+
+    private func assertInteractionStates(
+        semanticTint: TemplateControlSemanticTint,
+        normalColor: NSColor,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let button = TemplateControlButton(
+            image: NSImage(size: CGSize(width: 24, height: 24)),
+            semanticTint: semanticTint
+        )
+        let appearance = button.effectiveAppearance
+
+        XCTAssertEqual(button.resolvedVisualState.interaction, .normal, file: file, line: line)
+        assertColor(
+            button.resolvedVisualState.tintColor,
+            equals: resolvedColor(normalColor, appearance: appearance),
+            file: file,
+            line: line
+        )
+
+        button.highlight(true)
+        XCTAssertEqual(button.resolvedVisualState.interaction, .highlighted, file: file, line: line)
+        assertColor(
+            button.resolvedVisualState.tintColor,
+            equals: resolvedColor(normalColor.withAlphaComponent(0.75), appearance: appearance),
+            file: file,
+            line: line
+        )
+
+        button.isEnabled = false
+        XCTAssertEqual(button.resolvedVisualState.interaction, .disabled, file: file, line: line)
+        assertColor(
+            button.resolvedVisualState.tintColor,
+            equals: resolvedColor(.disabledControlTextColor, appearance: appearance),
+            file: file,
+            line: line
+        )
+    }
+
+    private func resolvedColor(_ color: NSColor, appearance: NSAppearance) -> NSColor {
+        var resolved = color
+        appearance.performAsCurrentDrawingAppearance {
+            resolved = color.usingColorSpace(.deviceRGB) ?? color
+        }
+        return resolved
+    }
+
+    private func assertColor(
+        _ actual: NSColor,
+        equals expected: NSColor,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let actualRGB = actual.usingColorSpace(.deviceRGB),
+              let expectedRGB = expected.usingColorSpace(.deviceRGB) else {
+            XCTFail("Colors must convert to device RGB", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(actualRGB.redComponent, expectedRGB.redComponent, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(actualRGB.greenComponent, expectedRGB.greenComponent, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(actualRGB.blueComponent, expectedRGB.blueComponent, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(actualRGB.alphaComponent, expectedRGB.alphaComponent, accuracy: 0.001, file: file, line: line)
+    }
 }
 
 private extension NSView {
     var descendants: [NSView] {
         subviews + subviews.flatMap(\.descendants)
+    }
+}
+
+@MainActor
+private final class StubTemplateControlImageLoader: TemplateControlImageLoading {
+    private(set) var loadedAssets: [TemplateControlImageAsset] = []
+
+    func load(_ asset: TemplateControlImageAsset) -> LoadedTemplateImage {
+        loadedAssets.append(asset)
+        let image = NSImage(size: CGSize(width: 24, height: 24))
+        image.isTemplate = true
+        return LoadedTemplateImage(image: image, source: .bundlePNG)
     }
 }

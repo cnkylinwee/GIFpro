@@ -396,7 +396,11 @@ final class SelectionControlsView: NSView {
     private let durationControl = NSSegmentedControl(labels: ["15s", "30s", "60s", "90s"], trackingMode: .selectOne, target: nil, action: nil)
     private let cursorControl = NSButton(checkboxWithTitle: "Cursor", target: nil, action: nil)
 
-    init(settings: RecordingSettings, supportsTwoX: Bool) {
+    init(
+        settings: RecordingSettings,
+        supportsTwoX: Bool,
+        imageLoader: any TemplateControlImageLoading
+    ) {
         if !supportsTwoX, settings.scale == .two {
             self.settings = RecordingSettings(
                 scale: .one,
@@ -412,13 +416,13 @@ final class SelectionControlsView: NSView {
         layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.96).cgColor
         layer?.cornerRadius = 10
         scaleControl.setEnabled(supportsTwoX, forSegment: 1)
-        configureControls()
+        configureControls(imageLoader: imageLoader)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    private func configureControls() {
+    private func configureControls(imageLoader: any TemplateControlImageLoading) {
         scaleControl.selectedSegment = settings.scale == .one ? 0 : 1
         fpsControl.selectedSegment = RecordingSettings.FramesPerSecond.allCases.firstIndex(of: settings.fps) ?? 1
         durationControl.selectedSegment = RecordingSettings.Duration.allCases.firstIndex(of: settings.duration) ?? 1
@@ -431,7 +435,18 @@ final class SelectionControlsView: NSView {
         cursorControl.target = self
         cursorControl.action = #selector(controlChanged)
 
-        let record = NSButton(title: "Record", target: self, action: #selector(recordPressed))
+        let record = TemplateControlButton(
+            image: imageLoader.load(.recordButton).image,
+            semanticTint: .accent
+        )
+        record.identifier = NSUserInterfaceItemIdentifier("gifpro.record")
+        record.setAccessibilityIdentifier("gifpro.record")
+        record.toolTip = "开始录制"
+        record.setAccessibilityElement(true)
+        record.setAccessibilityRole(.button)
+        record.setAccessibilityLabel("开始录制")
+        record.target = self
+        record.action = #selector(recordPressed)
         record.keyEquivalent = "\r"
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelPressed))
         let stack = NSStackView(views: [scaleControl, fpsControl, durationControl, cursorControl, record, cancel])
