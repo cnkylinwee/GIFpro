@@ -48,6 +48,13 @@ enum MenuBarPresentation {
     }
 }
 
+@MainActor
+protocol RecordingCommandTitleProviding {
+    var recordingCommandTitle: String { get }
+}
+
+extension RecordingCoordinator: RecordingCommandTitleProviding {}
+
 struct MenuBarContent: View {
     @ObservedObject var coordinator: RecordingCoordinator
     let permissionService: PermissionService
@@ -65,7 +72,7 @@ struct MenuBarContent: View {
             Divider()
         }
 
-        Button(coordinator.recordingCommandTitle) {
+        Button(Self.recordingCommandTitle(from: coordinator)) {
             Task { await coordinator.toggleRecording() }
         }
 
@@ -82,6 +89,10 @@ struct MenuBarContent: View {
         Button("退出") {
             NSApplication.shared.terminate(nil)
         }
+    }
+
+    static func recordingCommandTitle(from source: some RecordingCommandTitleProviding) -> String {
+        source.recordingCommandTitle
     }
 }
 

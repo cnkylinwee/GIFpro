@@ -503,6 +503,19 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.coordinator.recordingCommandTitle, "停止录制")
     }
 
+    func testOverlayStopActivationIsConsumedOnceDownstream() async {
+        let harness = try! Harness()
+        await harness.startRecording()
+
+        harness.selection.pressStop()
+        harness.selection.pressStop()
+        harness.selection.pressStop()
+        await eventually { harness.capture.stopCount == 1 }
+
+        XCTAssertEqual(harness.selection.stopCallbackCount, 1)
+        XCTAssertEqual(harness.capture.stopCount, 1)
+    }
+
     func testDurationLimitCancelsSuspendedCaptureStartWithinHalfSecond() async {
         let settings = RecordingSettings(
             scale: .one,
@@ -792,17 +805,25 @@ private struct FakeError: Error {}
     var settingsCallback: ((RecordingSettings) -> Void)?; var cancelCallback: (() -> Void)?; var displayCallback: ((DisplayConfigurationChange) -> Void)?; var events: EventRecorder?
     var countdownUpdates: [Int] = []
     var statusUpdates: [(elapsed: TimeInterval, remaining: TimeInterval, warning: Bool)] = []
+    var stopCallback: (() -> Void)?
+    private(set) var stopCallbackCount = 0
     func show(settings: RecordingSettings, onSettingsChanged: @escaping (RecordingSettings) -> Void, onRecord: @escaping (CaptureRegion, RecordingSettings) -> Void, onCancel: @escaping () -> Void, onDisplayChange: @escaping (DisplayConfigurationChange) -> Void) { showCount += 1; shownSettings.append(settings); settingsCallback = onSettingsChanged; recordCallbacks.append(onRecord); cancelCallback = onCancel; displayCallback = onDisplayChange }
     func dismiss() {}
     func showCountdownVisual(value: Int, targetDisplayID: CGDirectDisplayID) { countdownUpdates.append(value) }
     func updateCountdown(value: Int) { countdownUpdates.append(value) }
-    func showRecordingVisual(onStop: @escaping () -> Void) {}
+    func showRecordingVisual(onStop: @escaping () -> Void) { stopCallback = onStop }
     func updateRecordingStatus(elapsed: TimeInterval, remaining: TimeInterval, isWarning: Bool) { statusUpdates.append((elapsed, remaining, isWarning)) }
     func showStoppingVisual() { events?.values.append("visual-stopping") }
     func changeSettings(_ value: RecordingSettings) { settingsCallback?(value) }
     func record(_ region: CaptureRegion, _ settings: RecordingSettings) { recordCallbacks.last?(region, settings) }
     func cancel() { cancelCallback?() }
     func displayChange(_ change: DisplayConfigurationChange) { displayCallback?(change) }
+    func pressStop() {
+        guard let callback = stopCallback else { return }
+        stopCallback = nil
+        stopCallbackCount += 1
+        callback()
+    }
 }
 
 private final class FakeCapture: RecordingCaptureControlling, @unchecked Sendable {

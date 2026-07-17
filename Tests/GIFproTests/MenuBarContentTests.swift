@@ -3,6 +3,16 @@ import XCTest
 
 @MainActor
 final class MenuBarContentTests: XCTestCase {
+    func testRecordingCommandUsesCoordinatorOwnedTitle() {
+        struct FakeTitleProvider: RecordingCommandTitleProviding {
+            let recordingCommandTitle: String
+        }
+        XCTAssertEqual(
+            MenuBarContent.recordingCommandTitle(from: FakeTitleProvider(recordingCommandTitle: "停止录制")),
+            "停止录制"
+        )
+    }
+
     func testCriticalFailuresHaveChineseMessagesAndRecoveryActions() {
         let permission = MenuBarPresentation.issue(state: .failed(.permissionDenied), lastFailure: nil, saveWarnings: [])
         XCTAssertTrue(permission?.message.contains("屏幕录制权限") == true)
