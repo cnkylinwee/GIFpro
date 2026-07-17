@@ -47,7 +47,7 @@
 
 停止图形按比例缩放到 24×24 point，按钮和 panel 固定为 44×44 point。按钮保留辅助功能 role `button`、标签“停止录制”、press action 和 Tooltip“停止录制”。只有这个窄 panel 接收鼠标；录制边框和状态 panel 继续穿透鼠标。
 
-停止按钮使用会话代次和 one-shot gate。第一次有效 mouse-up 先禁用按钮并关闭停止 panel，再调用一次 UI callback。后续双击、迟到 action 或旧会话 action 都无效。`RecordingCoordinator` 继续保证底层 capture stop 只执行一次。
+停止按钮使用会话代次和 one-shot gate。第一次有效 activation（鼠标、键盘或辅助功能 press action）先禁用按钮并关闭停止 panel，再调用一次 UI callback。后续双击、迟到 action、重复辅助功能 action 或旧会话 action 都无效。`RecordingCoordinator` 继续保证底层 capture stop 只执行一次。
 
 ### 2.5 状态与 panel 生命周期
 
@@ -70,12 +70,13 @@
 1. 如果 `visibleFrame` 可容纳横向组合，状态在左、停止在右。组合优先放在选区下方 8 point；下方不足则放在上方 8 point；上下都不足则靠近选区上边缘并夹取到 `visibleFrame`。
 2. 如果横向组合无法容纳，改为纵向排列，状态在上、停止在下，间距 8 point；状态宽度最多缩至 `visibleFrame.width`。组合仍按下方、上方、夹取的顺序放置。
 3. 倒计时和 stopping 没有停止 panel。状态 panel 单独居中靠近选区，并夹取到 `visibleFrame`。
+4. 当 `visibleFrame` 既无法容纳横排（至少 152×44 point），也无法容纳纵排（至少 44×80 point）时，停止操作优先：隐藏状态 panel，只显示完整的 44×44 point 停止 panel，并把它夹取到 `visibleFrame`。如果 `visibleFrame` 本身小于 44×44 point，记录布局错误并让菜单栏“停止录制”作为可达回退；真实 `NSScreen.visibleFrame` 不应触发此测试专用防御路径。
 
-布局测试使用 64×64 最小选区、四个屏幕角、贴四边和普通居中选区。每个用例都断言 panel 不相交、停止 frame 可完整点击、所有 frame 位于 `visibleFrame`。
+布局测试使用 64×64 最小选区、四个屏幕角、贴四边和普通居中选区，并覆盖恰好 152×44、44×80、140×60 和小于 44×44 point 的 `visibleFrame`。正常与 stop-only 用例断言停止 frame 完整可点击且所有已显示 frame 位于 `visibleFrame`；小于 44×44 的防御用例断言记录错误并保留菜单停止入口。
 
 ## 3. 资源与体积
 
-实现从用户已提供的源文件复制资源：
+实现时执行一次性资源导入：
 
 | 源文件 | 仓库目标 | App bundle 目标 |
 | --- | --- | --- |
@@ -83,7 +84,9 @@
 | `/Users/wdychn/Downloads/停止按钮.png` | `Resources/StopButton.png` | `Contents/Resources/StopButton.png` |
 | `/Users/wdychn/Downloads/边框.png` | `docs/assets/SelectionBorderReference.png` | 不复制到 App |
 
-生产加载器使用 `Bundle.main.url(forResource: "RecordButton", withExtension: "png")` 和对应的 `StopButton` 精确名称，不使用泛名称 `NSImage(named:)`。测试向加载器注入资源目录，并复用同一组资源名常量。
+`/Users/wdychn/Downloads` 只提供本次导入来源。资源提交到仓库后，所有 Debug、Release、测试和 CI 构建都只读取仓库中的 `Resources/RecordButton.png`、`Resources/StopButton.png` 和 `docs/assets/SelectionBorderReference.png`，不依赖 Downloads 或任何用户绝对路径。
+
+生产加载器使用 `Bundle.main.url(forResource: "RecordButton", withExtension: "png")` 和对应的 `StopButton` 精确名称，不使用泛名称 `NSImage(named:)`。测试向加载器注入仓库资源目录，并复用同一组资源名常量。
 
 构建脚本把两张按钮资源复制到 `.app`，并继续执行小于 10 MB、arm64-only、系统动态库和签名门禁。两张原始 PNG 合计约 81 KB。加载器复制 `NSImage` 后设置 `isTemplate = true`，不得修改用户的原始附件。
 
@@ -100,7 +103,7 @@
 
 - Debug 和 Release 都不因资源缺失崩溃。加载器记录错误，并返回具体回退图形：录制使用 `record.circle`，停止使用 `stop.circle.fill`。如果系统 symbol 也不可用，则用矢量圆环加圆点、圆环加方块绘制 24×24 point 模板图。
 - 回退图形继续使用规定的 tint、44×44 frame、Tooltip、辅助功能 role、label、action 和原有 callback。
-- Release 构建验证源资源、App bundle 资源及字节一致；缺失或复制不一致时构建失败。运行时回退用于开发启动方式和受损 bundle，不放宽发布门禁。
+- Release 构建验证仓库 `Resources` 与 App bundle 对应资源字节一致；缺失或复制不一致时构建失败。构建脚本不得读取 Downloads。运行时回退用于开发启动方式和受损 bundle，不放宽发布门禁。
 - 边框矢量绘制不依赖外部文件，因此框选始终可用。
 
 ## 6. 测试与验收
@@ -115,8 +118,8 @@
 - 缺失资源的注入测试验证具体 symbol/矢量回退，按钮仍可点击且辅助功能语义完整。
 - 参数化布局测试覆盖最小选区、四角、四边和居中选区；状态与停止 panel 不相交且都在 `visibleFrame` 内。
 - 状态表中的每个阶段都验证 panel 存在性、鼠标穿透、关闭和旧 callback 失效。
-- 快速双击停止时 `callbackCount == 1` 且下游 `stopCount == 1`。
-- Debug 与 Release 包含两张 PNG；Release 还验证源与 bundle 字节一致，arm64、签名、动态库和 10 MB 门禁继续通过。
+- 快速双击和连续两次辅助功能 press action 都满足 `callbackCount == 1` 且下游 `stopCount == 1`；鼠标后接辅助功能 action 的混合重复也无效。
+- Debug 与 Release 包含两张 PNG；Release 还验证仓库资源与 bundle 字节一致，arm64、签名、动态库和 10 MB 门禁继续通过。
 
 人工验收覆盖浅色与深色模式，并在不同大小的选区上检查边框无拉伸、控制点清晰、八方向缩放正确。录制时验证停止图形无文字重叠，除停止按钮外的区域都能操作底层应用。
 
