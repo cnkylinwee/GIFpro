@@ -41,6 +41,57 @@ final class RecordingSettingsTests: XCTestCase {
         XCTAssertFalse(settings.showsCursor)
     }
 
+    func testOneInvalidPersistedIntegerDoesNotChangeOtherValidFields() {
+        let cases: [(RecordingSettings, RecordingSettings)] = [
+            (
+                RecordingSettings(
+                    scaleRawValue: 3,
+                    fpsRawValue: 15,
+                    durationRawValue: 90,
+                    showsCursor: false
+                ),
+                RecordingSettings(
+                    scale: .one,
+                    fps: .fifteen,
+                    duration: .ninety,
+                    showsCursor: false
+                )
+            ),
+            (
+                RecordingSettings(
+                    scaleRawValue: 2,
+                    fpsRawValue: 24,
+                    durationRawValue: 90,
+                    showsCursor: false
+                ),
+                RecordingSettings(
+                    scale: .two,
+                    fps: .twelve,
+                    duration: .ninety,
+                    showsCursor: false
+                )
+            ),
+            (
+                RecordingSettings(
+                    scaleRawValue: 2,
+                    fpsRawValue: 15,
+                    durationRawValue: 45,
+                    showsCursor: false
+                ),
+                RecordingSettings(
+                    scale: .two,
+                    fps: .fifteen,
+                    duration: .thirty,
+                    showsCursor: false
+                )
+            ),
+        ]
+
+        for (actual, expected) in cases {
+            XCTAssertEqual(actual, expected)
+        }
+    }
+
     func testValidPersistedIntegersAreRestored() {
         let settings = RecordingSettings(
             scaleRawValue: 2,
