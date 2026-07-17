@@ -387,6 +387,65 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.coordinator.recordingCommandTitle, "停止录制")
     }
 
+    func testDurationLimitCancelsSuspendedCaptureStartWithinHalfSecond() async {
+        let settings = RecordingSettings(
+            scale: .one,
+            fps: .twelve,
+            duration: .fifteen,
+            showsCursor: true
+        )
+        let harness = try! Harness(settings: settings, suspendCaptureStart: true)
+        await harness.beginSelectionAndRecord()
+        await harness.finishCountdown()
+        await eventually { harness.capture.startCount == 1 }
+        await eventually { harness.clock.pendingSleepCount >= 2 }
+
+        harness.clock.advance(by: 15)
+        await eventually { harness.coordinator.state.isPreviewReady }
+
+        XCTAssertEqual(harness.capture.stopCount, 1)
+        XCTAssertEqual(harness.coordinator.stopReason, .durationLimit)
+        XCTAssertLessThanOrEqual(abs(harness.coordinator.elapsedSeconds - 15), 0.5)
+    }
+
+    func testDiskLimitCancelsSuspendedCaptureStartAndFinalizes() async {
+        let harness = try! Harness(suspendCaptureStart: true)
+        await harness.beginSelectionAndRecord()
+        await harness.finishCountdown()
+        await eventually { harness.capture.startCount == 1 }
+        harness.tempStore.capacity = .mustStop
+        await eventually { harness.clock.pendingSleepCount >= 2 }
+
+        harness.clock.advance(by: 1)
+        await eventually { harness.coordinator.state.isPreviewReady }
+
+        XCTAssertEqual(harness.capture.stopCount, 1)
+        XCTAssertEqual(harness.coordinator.stopReason, .diskSpace)
+    }
+
+    func testCaptureStartFailureCancelsRuntimeTasksWithoutStaleMutation() async {
+        let harness = try! Harness(
+            suspendCaptureStart: true,
+            releaseCaptureStartOnStop: false
+        )
+        await harness.beginSelectionAndRecord()
+        await harness.finishCountdown()
+        await eventually { harness.clock.pendingSleepCount >= 2 }
+        harness.capture.releaseStart(error: FakeError())
+        await eventually { harness.coordinator.state == .failed(.captureFailed) }
+        let discardCount = harness.tempStore.discardCount
+        let statusCount = harness.selection.statusUpdates.count
+
+        harness.clock.advance(by: 100)
+        await Task.yield()
+
+        XCTAssertEqual(harness.coordinator.state, .failed(.captureFailed))
+        XCTAssertEqual(harness.tempStore.discardCount, discardCount)
+        XCTAssertNil(harness.coordinator.stopReason)
+        XCTAssertEqual(harness.coordinator.elapsedSeconds, 0)
+        XCTAssertEqual(harness.selection.statusUpdates.count, statusCount)
+    }
+
     private func assertLateCaptureCompletionDoesNotMutateNewSession(error: Error?) async {
         let harness = try! Harness(suspendCaptureStart: true, releaseCaptureStartOnStop: false)
         await harness.startRecording()

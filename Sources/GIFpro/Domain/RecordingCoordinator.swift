@@ -302,6 +302,7 @@ final class RecordingCoordinator: ObservableObject {
             remaining: TimeInterval(settings.duration.rawValue),
             isWarning: false
         )
+        startRuntimeTasks(token: sessionToken)
         let outputSize = region.outputPixelSize
         let processor = processor
         do {
@@ -332,13 +333,13 @@ final class RecordingCoordinator: ObservableObject {
         } catch {
             guard token == sessionToken, self.encoder === encoder else { return }
             if state == .finalizing { return }
+            cancelRuntimeTasks()
             discardActiveFile()
             transition(to: .failed(.captureFailed))
             selection.dismiss()
             return
         }
         guard token == sessionToken, state == .recording, self.encoder === encoder else { return }
-        startRuntimeTasks(token: sessionToken)
     }
 
     private func acceptsFrames(token sessionToken: UUID, encoder sessionEncoder: any RecordingEncoding) -> Bool {
@@ -362,6 +363,7 @@ final class RecordingCoordinator: ObservableObject {
             guard let self else { return }
             while self.token == sessionToken, self.state == .recording {
                 do { try await self.clock.sleep(for: 0.25) } catch { return }
+                guard self.token == sessionToken, self.state == .recording else { return }
                 guard let start = self.recordingStartTime else { return }
                 self.elapsedSeconds = max(0, self.clock.now() - start)
                 self.isInFinalTenSeconds = self.elapsedSeconds >= max(0, duration - 10)
