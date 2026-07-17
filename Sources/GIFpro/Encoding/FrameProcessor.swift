@@ -18,7 +18,6 @@ final class FrameProcessor {
 
     private let context: CIContext
     private let imageCreator: ImageCreator
-    private let inputColorSpace: CGColorSpace
     private let outputColorSpace: CGColorSpace
 
     init(
@@ -29,7 +28,6 @@ final class FrameProcessor {
     ) {
         self.context = context
         self.imageCreator = imageCreator
-        inputColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
         outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     }
 
@@ -48,10 +46,7 @@ final class FrameProcessor {
         }
 
         return try autoreleasepool {
-            let source = CIImage(
-                cvPixelBuffer: pixelBuffer,
-                options: [.colorSpace: inputColorSpace]
-            )
+            let source = CIImage(cvPixelBuffer: pixelBuffer)
             guard source.extent.width > 0, source.extent.height > 0 else {
                 throw ProcessingError.imageCreationFailed
             }

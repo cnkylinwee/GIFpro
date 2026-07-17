@@ -35,7 +35,7 @@ final class FrameProcessorTests: XCTestCase {
         }
     }
 
-    func testSuppliesExplicitSRGBInputAndOutputColorSpaces() throws {
+    func testUsesSRGBAttachmentAndProducesSRGBOutput() throws {
         let pixelBuffer = try makePixelBuffer(width: 1, height: 1, pixels: [0, 0, 255, 255])
         var observedInputColorSpace: CFString?
         let processor = FrameProcessor(imageCreator: { context, image, bounds, colorSpace in
@@ -50,6 +50,60 @@ final class FrameProcessorTests: XCTestCase {
 
         XCTAssertEqual(observedInputColorSpace, CGColorSpace.sRGB)
         XCTAssertEqual(image.colorSpace?.name, CGColorSpace.sRGB)
+    }
+
+    func testConvertsDisplayP3AttachmentToSRGBPixelsInsteadOfRelabelingInput() throws {
+        let displayP3 = try XCTUnwrap(CGColorSpace(name: CGColorSpace.displayP3))
+        let sRGB = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let pixelBuffer = try makePixelBuffer(
+            width: 1,
+            height: 1,
+            pixels: [24, 112, 224, 255],
+            colorSpace: displayP3
+        )
+        var observedInputColorSpace: CFString?
+        let context = CIContext()
+        let processor = FrameProcessor(context: context, imageCreator: { context, image, bounds, colorSpace in
+            observedInputColorSpace = image.colorSpace?.name
+            return context.createCGImage(image, from: bounds, format: .BGRA8, colorSpace: colorSpace)
+        })
+
+        let output = try processor.process(
+            pixelBuffer: pixelBuffer,
+            targetPixelSize: CGSize(width: 1, height: 1)
+        )
+        let bounds = CGRect(x: 0, y: 0, width: 1, height: 1)
+        let attachmentDrivenReference = try XCTUnwrap(
+            context.createCGImage(
+                CIImage(cvPixelBuffer: pixelBuffer),
+                from: bounds,
+                format: .BGRA8,
+                colorSpace: sRGB
+            )
+        )
+        let incorrectlyRelabeledReference = try XCTUnwrap(
+            context.createCGImage(
+                CIImage(cvPixelBuffer: pixelBuffer, options: [.colorSpace: sRGB]),
+                from: bounds,
+                format: .BGRA8,
+                colorSpace: sRGB
+            )
+        )
+        let actualPixel = try rgbaBytes(of: output)
+        let expectedPixel = try rgbaBytes(of: attachmentDrivenReference)
+        let relabeledPixel = try rgbaBytes(of: incorrectlyRelabeledReference)
+
+        XCTAssertEqual(observedInputColorSpace, CGColorSpace.displayP3)
+        XCTAssertEqual(output.colorSpace?.name, CGColorSpace.sRGB)
+        for channel in 0 ..< 3 {
+            XCTAssertEqual(actualPixel[channel], expectedPixel[channel], accuracy: 2)
+        }
+        XCTAssertTrue(
+            zip(actualPixel.prefix(3), relabeledPixel.prefix(3)).contains {
+                abs(Int($0) - Int($1)) >= 4
+            },
+            "The chosen Display P3 pixel must exercise a real numeric conversion"
+        )
     }
 
     func testProcessesOneToOneBGRApixelBufferWithoutChangingPixels() throws {
@@ -143,7 +197,8 @@ final class FrameProcessorTests: XCTestCase {
     private func makePixelBuffer(
         width: Int,
         height: Int,
-        pixels: [UInt8]
+        pixels: [UInt8],
+        colorSpace: CGColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     ) throws -> CVPixelBuffer {
         var pixelBuffer: CVPixelBuffer?
         XCTAssertEqual(
@@ -161,7 +216,7 @@ final class FrameProcessorTests: XCTestCase {
         CVBufferSetAttachment(
             buffer,
             kCVImageBufferCGColorSpaceKey,
-            CGColorSpace(name: CGColorSpace.sRGB)!,
+            colorSpace,
             .shouldPropagate
         )
         CVPixelBufferLockBaseAddress(buffer, [])
