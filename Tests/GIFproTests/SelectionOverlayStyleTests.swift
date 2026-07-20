@@ -14,6 +14,7 @@ final class SelectionOverlayStyleTests: XCTestCase {
         XCTAssertEqual(SelectionOverlayStyle.visibleHandleSize, CGSize(width: 10, height: 10))
         XCTAssertEqual(SelectionOverlayStyle.handleHitSize, CGSize(width: 16, height: 16))
         XCTAssertEqual(SelectionOverlayStyle.handleCornerRadius, 2)
+        XCTAssertEqual(SelectionOverlayStyle.selectionDashPattern, [NSNumber(value: 8), NSNumber(value: 6)])
         XCTAssertEqual(selecting.borderRole, .selectionAccent)
         XCTAssertEqual(selecting.handleFillRole, .windowBackground)
         XCTAssertEqual(recording.borderRole, .recordingRed)
@@ -75,6 +76,15 @@ final class SelectionOverlayStyleTests: XCTestCase {
             style.hitHandle(at: CGPoint(x: 111, y: 91), selection: narrowSelection),
             .topRight
         )
+    }
+
+    func testFullBorderEdgesAreResizeTargets() {
+        let style = SelectionOverlayStyle.selecting
+
+        XCTAssertEqual(style.hitHandle(at: CGPoint(x: 160, y: selection.maxY + 1), selection: selection), .top)
+        XCTAssertEqual(style.hitHandle(at: CGPoint(x: 240, y: selection.minY - 1), selection: selection), .bottom)
+        XCTAssertEqual(style.hitHandle(at: CGPoint(x: selection.minX - 1, y: 140), selection: selection), .left)
+        XCTAssertEqual(style.hitHandle(at: CGPoint(x: selection.maxX + 1, y: 180), selection: selection), .right)
     }
 
     func testSemanticRolesResolveAgainstLightAndDarkAppearances() throws {
@@ -152,10 +162,10 @@ final class SelectionOverlayStyleTests: XCTestCase {
         XCTAssertEqual(view.selectionRect, CGRect(x: start.x, y: start.y, width: 80, height: 70))
     }
 
-    func testDefaultSelectionRectIsCenteredAtThreeHundredByTwoHundred() {
+    func testDefaultSelectionRectIsCenteredAtFiveHundredByThreeHundred() {
         XCTAssertEqual(
-            SelectionGeometry.defaultRect(within: CGRect(x: 0, y: 0, width: 500, height: 400)),
-            CGRect(x: 100, y: 100, width: 300, height: 200)
+            SelectionGeometry.defaultRect(within: CGRect(x: 0, y: 0, width: 800, height: 600)),
+            CGRect(x: 150, y: 150, width: 500, height: 300)
         )
         XCTAssertEqual(
             SelectionGeometry.defaultRect(within: CGRect(x: 0, y: 0, width: 240, height: 160)),

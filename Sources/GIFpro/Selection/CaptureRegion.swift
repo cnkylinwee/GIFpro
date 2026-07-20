@@ -22,7 +22,7 @@ enum ResizeHandle: CaseIterable, Hashable, Sendable {
 
 enum SelectionGeometry {
     static let minimumSize = CGSize(width: 64, height: 64)
-    static let defaultSize = CGSize(width: 300, height: 200)
+    static let defaultSize = CGSize(width: 500, height: 300)
 
     static func resized(
         _ rect: CGRect,

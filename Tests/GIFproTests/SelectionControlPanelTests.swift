@@ -341,7 +341,7 @@ final class SelectionControlPanelTests: XCTestCase {
         let previewPanel = try XCTUnwrap(controller.selectionMovePanel)
         XCTAssertEqual(view.selectionRect, startSelection)
         XCTAssertTrue(view.hidesSelectionChrome)
-        XCTAssertEqual(previewPanel.frame.origin, CGPoint(x: 394, y: 324))
+        XCTAssertEqual(previewPanel.frame.origin, CGPoint(x: 294, y: 274))
         XCTAssertEqual(panel.frame.origin, CGPoint(x: startPanelFrame.minX + 60, y: startPanelFrame.minY + 40))
 
         handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: -10_000, y: -10_000)))
@@ -349,7 +349,7 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertEqual(previewPanel.frame.origin, CGPoint(x: -16, y: -16))
         handle.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: CGPoint(x: -10_000, y: -10_000)))
 
-        XCTAssertEqual(view.selectionRect, CGRect(x: 0, y: 0, width: 300, height: 200))
+        XCTAssertEqual(view.selectionRect, CGRect(x: 0, y: 0, width: 500, height: 300))
         XCTAssertFalse(view.hidesSelectionChrome)
         XCTAssertNil(controller.selectionMovePanel)
         XCTAssertEqual(
@@ -373,7 +373,7 @@ final class SelectionControlPanelTests: XCTestCase {
 
         let view = try XCTUnwrap(controller.selectionOverlayViews[42])
 
-        XCTAssertEqual(view.selectionRect, CGRect(x: 350, y: 300, width: 300, height: 200))
+        XCTAssertEqual(view.selectionRect, CGRect(x: 250, y: 250, width: 500, height: 300))
         XCTAssertTrue(controller.lifecycleSnapshot.hasControlPanel)
         XCTAssertEqual(loader.loadedAssets, [.recordButton])
     }
@@ -604,7 +604,7 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertTrue(controller.lifecycleSnapshot.hasControlPanel)
 
         let ownerView = try XCTUnwrap(controller.selectionOverlayViews[7])
-        XCTAssertEqual(ownerView.selectionRect, CGRect(x: 50, y: 50, width: 300, height: 200))
+        XCTAssertEqual(ownerView.selectionRect, CGRect(x: 0, y: 0, width: 400, height: 300))
 
         controller.showCountdown(value: 3, targetDisplayID: 7)
         XCTAssertEqual(controller.lifecycleSnapshot.phase, .countingDown)

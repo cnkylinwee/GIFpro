@@ -17,6 +17,11 @@ enum RecordingCompletionNotice: Equatable, Sendable {
     case captureStopped
 }
 
+enum RecordingStartMode: Equatable, Sendable {
+    case fullScreen
+    case region
+}
+
 @MainActor protocol RecordingPermissionAuthorizing: AnyObject {
     func requestAccessIfNeeded() -> Bool
     func recheckAccess() -> Bool
@@ -24,6 +29,7 @@ enum RecordingCompletionNotice: Equatable, Sendable {
 
 @MainActor protocol RecordingSelectionPresenting: AnyObject {
     func show(
+        mode: RecordingStartMode,
         settings: RecordingSettings,
         onSettingsChanged: @escaping (RecordingSettings) -> Void,
         onRecord: @escaping (CaptureRegion, RecordingSettings) -> Void,
@@ -193,12 +199,26 @@ final class RecordingCoordinator: ObservableObject {
     func toggleRecording() async {
         switch state {
         case .idle, .failed:
-            beginSelection()
+            beginSelection(mode: .region)
         case .selecting, .countingDown, .recording:
             await stop(reason: .manual)
         case .previewReady, .awaitingSave:
             await discardUnsavedOutput()
-            beginSelection()
+            beginSelection(mode: .region)
+        default:
+            break
+        }
+    }
+
+    func startRecording(mode: RecordingStartMode) async {
+        switch state {
+        case .idle, .failed:
+            beginSelection(mode: mode)
+        case .previewReady, .awaitingSave:
+            await discardUnsavedOutput()
+            beginSelection(mode: mode)
+        case .selecting, .countingDown, .recording:
+            await stop(reason: .manual)
         default:
             break
         }
@@ -210,9 +230,9 @@ final class RecordingCoordinator: ObservableObject {
         switch action {
         case .recheckPermission:
             guard permission.recheckAccess() else { return }
-            beginSelection()
+            beginSelection(mode: .region)
         case .rerecord:
-            beginSelection()
+            beginSelection(mode: .region)
         case .saveAgain:
             preview.retrySave()
         }
@@ -264,7 +284,7 @@ final class RecordingCoordinator: ObservableObject {
         await task.value
     }
 
-    private func beginSelection() {
+    private func beginSelection(mode: RecordingStartMode) {
         resetSession()
         saveWarnings = []
         lastUserFacingFailure = nil
@@ -275,11 +295,12 @@ final class RecordingCoordinator: ObservableObject {
         }
         settings = preferences.load()
         transition(to: .selecting)
-        showSelection(for: token)
+        showSelection(mode: mode, for: token)
     }
 
-    private func showSelection(for sessionToken: UUID) {
+    private func showSelection(mode: RecordingStartMode, for sessionToken: UUID) {
         selection.show(
+            mode: mode,
             settings: settings,
             onSettingsChanged: { [weak self] value in
                 guard let self, self.token == sessionToken else { return }
@@ -752,7 +773,7 @@ final class RecordingCoordinator: ObservableObject {
         saveWarnings = []
         settings = preferences.load()
         transition(to: .selecting)
-        showSelection(for: token)
+        showSelection(mode: .region, for: token)
     }
 
     private func previewIdentityURL(for file: TemporaryFile) -> URL {

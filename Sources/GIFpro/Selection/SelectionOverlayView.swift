@@ -46,6 +46,7 @@ struct SelectionOverlayStyle: Equatable {
     static let visibleHandleSize = CGSize(width: 10, height: 10)
     static let handleHitSize = CGSize(width: 16, height: 16)
     static let handleCornerRadius: CGFloat = 2
+    static let selectionDashPattern: [NSNumber] = [8, 6]
 
     static let selecting = SelectionOverlayStyle(
         borderRole: .selectionAccent,
@@ -83,11 +84,30 @@ struct SelectionOverlayStyle: Equatable {
     }
 
     func hitHandle(at point: CGPoint, selection: CGRect) -> ResizeHandle? {
-        let hitTestOrder: [ResizeHandle] = [
+        let cornerHitTestOrder: [ResizeHandle] = [
             .topLeft, .topRight, .bottomLeft, .bottomRight,
-            .top, .bottom, .left, .right,
         ]
-        return hitTestOrder.first { handleHitFrame(for: $0, selection: selection).contains(point) }
+        if let corner = cornerHitTestOrder.first(where: { handleHitFrame(for: $0, selection: selection).contains(point) }) {
+            return corner
+        }
+
+        let edgeHitSlop = Self.handleHitSize.width / 2
+        let horizontalRange = (selection.minX - edgeHitSlop)...(selection.maxX + edgeHitSlop)
+        let verticalRange = (selection.minY - edgeHitSlop)...(selection.maxY + edgeHitSlop)
+
+        if horizontalRange.contains(point.x), abs(point.y - selection.maxY) <= edgeHitSlop {
+            return .top
+        }
+        if horizontalRange.contains(point.x), abs(point.y - selection.minY) <= edgeHitSlop {
+            return .bottom
+        }
+        if verticalRange.contains(point.y), abs(point.x - selection.minX) <= edgeHitSlop {
+            return .left
+        }
+        if verticalRange.contains(point.y), abs(point.x - selection.maxX) <= edgeHitSlop {
+            return .right
+        }
+        return nil
     }
 
     private func center(for handle: ResizeHandle, selection: CGRect) -> CGPoint {
@@ -369,6 +389,7 @@ final class SelectionOverlayView: NSView {
         let style: SelectionOverlayStyle = showsHandles ? .selecting : .recording
         borderLayer.isHidden = hidesSelectionChrome
         borderLayer.strokeColor = style.borderRole.color(with: effectiveAppearance).cgColor
+        borderLayer.lineDashPattern = showsHandles ? SelectionOverlayStyle.selectionDashPattern : nil
         borderLayer.path = CGPath(
             rect: selectionRect.insetBy(
                 dx: SelectionOverlayStyle.borderWidth / 2,
@@ -379,20 +400,7 @@ final class SelectionOverlayView: NSView {
 
         for handle in ResizeHandle.allCases {
             guard let handleLayer = handleLayers[handle] else { continue }
-            guard showsHandles, !hidesSelectionChrome else {
-                handleLayer.isHidden = true
-                continue
-            }
-            let descriptor = style.handleRenderDescriptor(for: handle, selection: selectionRect)
-            handleLayer.isHidden = false
-            handleLayer.fillColor = style.handleFillRole.color(with: effectiveAppearance).cgColor
-            handleLayer.strokeColor = style.borderRole.color(with: effectiveAppearance).cgColor
-            handleLayer.path = CGPath(
-                roundedRect: descriptor.pathFrame,
-                cornerWidth: descriptor.pathCornerRadius,
-                cornerHeight: descriptor.pathCornerRadius,
-                transform: nil
-            )
+            handleLayer.isHidden = true
         }
     }
 

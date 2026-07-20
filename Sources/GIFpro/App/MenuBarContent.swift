@@ -1,5 +1,4 @@
 import AppKit
-import OSLog
 import SwiftUI
 
 enum MenuBarRecoveryAction: Equatable, Sendable {
@@ -21,7 +20,7 @@ enum MenuBarPresentation {
         if let failure {
             switch failure {
             case .permissionDenied:
-                return .init(message: "需要屏幕录制权限。请打开系统设置授权后重新检查。", actionTitle: "重新检查权限", action: .recheckPermission)
+                return .init(message: "需要屏幕录制权限。请在系统弹窗中授权后重新检查。", actionTitle: "重新检查权限", action: .recheckPermission)
             case .insufficientDiskSpace:
                 return .init(message: "磁盘可用空间不足，无法开始录制。", actionTitle: "重新录制", action: .rerecord)
             case .capacityUnavailable:
@@ -57,7 +56,7 @@ extension RecordingCoordinator: RecordingCommandTitleProviding {}
 
 struct MenuBarContent: View {
     @ObservedObject var coordinator: RecordingCoordinator
-    let permissionService: PermissionService
+    let showConsole: () -> Void
 
     var body: some View {
         if let issue = MenuBarPresentation.issue(
@@ -72,16 +71,20 @@ struct MenuBarContent: View {
             Divider()
         }
 
-        Button(Self.recordingCommandTitle(from: coordinator)) {
-            Task { await coordinator.toggleRecording() }
+        Button("打开控制台") {
+            showConsole()
         }
 
-        Button("打开屏幕录制设置") {
-            do {
-                try permissionService.openSettings()
-            } catch {
-                Logger.permissions.error("Could not open Screen Recording settings: \(error.localizedDescription, privacy: .public)")
-            }
+        Button("录制全屏画面") {
+            Task { await coordinator.startRecording(mode: .fullScreen) }
+        }
+
+        Button("录制屏幕区域") {
+            Task { await coordinator.startRecording(mode: .region) }
+        }
+
+        Button("偏好设置") {
+            GIFproPreferencesPanelController.shared.show()
         }
 
         Divider()
@@ -94,8 +97,4 @@ struct MenuBarContent: View {
     static func recordingCommandTitle(from source: some RecordingCommandTitleProviding) -> String {
         source.recordingCommandTitle
     }
-}
-
-private extension Logger {
-    static let permissions = Logger(subsystem: "com.gifpro.app", category: "Permissions")
 }

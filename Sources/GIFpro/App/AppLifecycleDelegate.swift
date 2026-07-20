@@ -5,6 +5,7 @@ import OSLog
 final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     let environment: AppEnvironment
     private var terminationReplyIsPending = false
+    private let consoleController = RecordingControlConsoleController()
 
     override init() {
         environment = AppEnvironment()
@@ -18,12 +19,13 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
 
     private lazy var hotKeyController = GlobalHotKeyController { [weak self] in
         guard let self else { return }
-        Task { @MainActor in await self.environment.coordinator.toggleRecording() }
+        Task { @MainActor in self.showControlConsole() }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
             try startup { try hotKeyController.start() }
+            showControlConsole()
         } catch {
             Logger.lifecycle.error("Startup failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -36,6 +38,22 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         _ = environment.coordinator.recheckPermission()
+    }
+
+    func showControlConsole() {
+        consoleController.show(
+            onFullScreen: { [weak self] in
+                guard let self else { return }
+                Task { @MainActor in await self.environment.coordinator.startRecording(mode: .fullScreen) }
+            },
+            onRegion: { [weak self] in
+                guard let self else { return }
+                Task { @MainActor in await self.environment.coordinator.startRecording(mode: .region) }
+            },
+            onPreferences: {
+                GIFproPreferencesPanelController.shared.show()
+            }
+        )
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

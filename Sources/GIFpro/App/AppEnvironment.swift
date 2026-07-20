@@ -131,6 +131,7 @@ private enum GIFEncodingAdapterError: Error {
 
 extension SelectionOverlayController: RecordingSelectionPresenting {
     func show(
+        mode: RecordingStartMode,
         settings: RecordingSettings,
         onSettingsChanged: @escaping (RecordingSettings) -> Void,
         onRecord: @escaping (CaptureRegion, RecordingSettings) -> Void,
@@ -141,7 +142,7 @@ extension SelectionOverlayController: RecordingSelectionPresenting {
         self.onRecord = onRecord
         self.onCancel = onCancel
         onDisplayConfigurationChanged = onDisplayChange
-        show(settings: settings)
+        show(mode: mode, settings: settings)
     }
 
     func showCountdownVisual(value: Int, targetDisplayID: CGDirectDisplayID) {

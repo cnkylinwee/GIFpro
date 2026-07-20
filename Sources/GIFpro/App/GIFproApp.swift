@@ -14,7 +14,7 @@ struct GIFproApp: App {
         MenuBarExtra("GIFpro", systemImage: "record.circle") {
             MenuBarContent(
                 coordinator: appDelegate.environment.coordinator,
-                permissionService: appDelegate.environment.permissionService
+                showConsole: { appDelegate.showControlConsole() }
             )
         }
     }

@@ -116,6 +116,15 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.selection.showCount, 1)
     }
 
+    func testExplicitStartModeIsForwardedToSelectionPresenter() async {
+        let harness = try! Harness()
+
+        await harness.coordinator.startRecording(mode: .fullScreen)
+
+        XCTAssertEqual(harness.coordinator.state, .selecting)
+        XCTAssertEqual(harness.selection.shownModes, [.fullScreen])
+    }
+
     func testMenuSaveRecoveryCallsPreviewRetryAfterSaveFailure() async {
         let harness = try! Harness()
         await harness.startRecording()
@@ -820,7 +829,7 @@ private struct FakeError: Error {}
 }
 
 @MainActor private final class FakeSelection: RecordingSelectionPresenting {
-    var showCount = 0; var shownSettings: [RecordingSettings] = []; var recordCallbacks: [(CaptureRegion, RecordingSettings) -> Void] = []
+    var showCount = 0; var shownModes: [RecordingStartMode] = []; var shownSettings: [RecordingSettings] = []; var recordCallbacks: [(CaptureRegion, RecordingSettings) -> Void] = []
     var settingsCallback: ((RecordingSettings) -> Void)?; var cancelCallback: (() -> Void)?; var displayCallback: ((DisplayConfigurationChange) -> Void)?; var events: EventRecorder?
     var countdownUpdates: [Int] = []
     var statusUpdates: [(elapsed: TimeInterval, remaining: TimeInterval, warning: Bool)] = []
@@ -832,7 +841,7 @@ private struct FakeError: Error {}
     init(recordingVisibleFrame: CGRect? = nil) {
         self.recordingVisibleFrame = recordingVisibleFrame
     }
-    func show(settings: RecordingSettings, onSettingsChanged: @escaping (RecordingSettings) -> Void, onRecord: @escaping (CaptureRegion, RecordingSettings) -> Void, onCancel: @escaping () -> Void, onDisplayChange: @escaping (DisplayConfigurationChange) -> Void) { showCount += 1; shownSettings.append(settings); settingsCallback = onSettingsChanged; recordCallbacks.append(onRecord); cancelCallback = onCancel; displayCallback = onDisplayChange }
+    func show(mode: RecordingStartMode, settings: RecordingSettings, onSettingsChanged: @escaping (RecordingSettings) -> Void, onRecord: @escaping (CaptureRegion, RecordingSettings) -> Void, onCancel: @escaping () -> Void, onDisplayChange: @escaping (DisplayConfigurationChange) -> Void) { showCount += 1; shownModes.append(mode); shownSettings.append(settings); settingsCallback = onSettingsChanged; recordCallbacks.append(onRecord); cancelCallback = onCancel; displayCallback = onDisplayChange }
     func dismiss() {}
     func showCountdownVisual(value: Int, targetDisplayID: CGDirectDisplayID) { countdownUpdates.append(value) }
     func updateCountdown(value: Int) { countdownUpdates.append(value) }
