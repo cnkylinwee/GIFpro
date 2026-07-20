@@ -338,13 +338,20 @@ final class SelectionControlPanelTests: XCTestCase {
         handle.mouseDown(with: try mouseEvent(type: .leftMouseDown, location: startPoint))
         handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: 72, y: 52)))
 
-        XCTAssertEqual(view.selectionRect, CGRect(x: 410, y: 340, width: 300, height: 200))
+        let previewPanel = try XCTUnwrap(controller.selectionMovePanel)
+        XCTAssertEqual(view.selectionRect, startSelection)
+        XCTAssertTrue(view.hidesSelectionChrome)
+        XCTAssertEqual(previewPanel.frame.origin, CGPoint(x: 394, y: 324))
         XCTAssertEqual(panel.frame.origin, CGPoint(x: startPanelFrame.minX + 60, y: startPanelFrame.minY + 40))
 
         handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: -10_000, y: -10_000)))
+        XCTAssertEqual(view.selectionRect, startSelection)
+        XCTAssertEqual(previewPanel.frame.origin, CGPoint(x: -16, y: -16))
         handle.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: CGPoint(x: -10_000, y: -10_000)))
 
         XCTAssertEqual(view.selectionRect, CGRect(x: 0, y: 0, width: 300, height: 200))
+        XCTAssertFalse(view.hidesSelectionChrome)
+        XCTAssertNil(controller.selectionMovePanel)
         XCTAssertEqual(
             panel.frame.origin,
             CGPoint(

@@ -173,6 +173,9 @@ final class SelectionOverlayView: NSView {
     var showsHandles = true {
         didSet { updateSelectionLayers() }
     }
+    var hidesSelectionChrome = false {
+        didSet { updateSelectionLayers() }
+    }
     var isInteractive = true
 
     private let dimmingLayer = CAShapeLayer()
@@ -364,7 +367,7 @@ final class SelectionOverlayView: NSView {
         }
 
         let style: SelectionOverlayStyle = showsHandles ? .selecting : .recording
-        borderLayer.isHidden = false
+        borderLayer.isHidden = hidesSelectionChrome
         borderLayer.strokeColor = style.borderRole.color(with: effectiveAppearance).cgColor
         borderLayer.path = CGPath(
             rect: selectionRect.insetBy(
@@ -376,7 +379,7 @@ final class SelectionOverlayView: NSView {
 
         for handle in ResizeHandle.allCases {
             guard let handleLayer = handleLayers[handle] else { continue }
-            guard showsHandles else {
+            guard showsHandles, !hidesSelectionChrome else {
                 handleLayer.isHidden = true
                 continue
             }

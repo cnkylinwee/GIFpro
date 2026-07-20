@@ -37,6 +37,10 @@ struct RecordingOverlayAuxiliaryState: Equatable {
     }
 }
 
+enum SelectionMovePreview {
+    static let padding = SelectionOverlayStyle.handleHitSize.width
+}
+
 struct RecordingOverlayAuxiliarySnapshot: Equatable {
     let phase: RecordingOverlayAuxiliaryPhase
     let hasStatusPanel: Bool
@@ -67,8 +71,10 @@ final class SelectionOverlayController {
     private var controlPanel: NSPanel?
     private var statusPanel: NSPanel?
     private var stopPanel: NSPanel?
+    private var selectionMovePreviewPanel: NSPanel?
     private var selectionMoveStartRect: CGRect?
     private var selectionMoveStartPanelFrame: CGRect?
+    private var selectionMoveLatestRect: CGRect?
     private var settings = RecordingSettings.default
     private var lifecycle = RecordingOverlayLifecycle()
     private(set) var stopActionTarget: OneShotActionTarget?
@@ -88,6 +94,8 @@ final class SelectionOverlayController {
     }
 
     var selectionControlPanel: NSPanel? { controlPanel }
+
+    var selectionMovePanel: NSPanel? { selectionMovePreviewPanel }
 
     init(
         converter: DisplayCoordinateConverter = DisplayCoordinateConverter(),
@@ -155,6 +163,7 @@ final class SelectionOverlayController {
         displayMonitor.stop()
         controlPanel?.close()
         controlPanel = nil
+        endMovingSelection()
         statusPanel?.close()
         statusPanel = nil
         stopPanel?.close()
@@ -469,8 +478,12 @@ final class SelectionOverlayController {
               let overlay = overlays[displayID],
               let selectionRect = overlay.view.selectionRect,
               let controlPanel else { return false }
+        endMovingSelection()
         selectionMoveStartRect = selectionRect
         selectionMoveStartPanelFrame = controlPanel.frame
+        selectionMoveLatestRect = selectionRect
+        overlay.view.hidesSelectionChrome = true
+        selectionMovePreviewPanel = makeSelectionMovePreviewPanel(for: selectionRect, overlay: overlay)
         return true
     }
 
@@ -485,11 +498,16 @@ final class SelectionOverlayController {
             translation: translation,
             within: overlay.view.bounds
         )
-        overlay.view.selectionRect = movedRect
+        selectionMoveLatestRect = movedRect
         let actualTranslation = CGPoint(
             x: movedRect.minX - startRect.minX,
             y: movedRect.minY - startRect.minY
         )
+        if let previewPanel = selectionMovePreviewPanel {
+            previewPanel.setFrameOrigin(
+                selectionMovePreviewOrigin(for: movedRect, overlay: overlay)
+            )
+        }
         controlPanel.setFrameOrigin(
             CGPoint(
                 x: startPanelFrame.minX + actualTranslation.x,
@@ -499,8 +517,56 @@ final class SelectionOverlayController {
     }
 
     private func endMovingSelection() {
+        if let ownerDisplayID,
+           let overlay = overlays[ownerDisplayID] {
+            if let selectionMoveLatestRect {
+                overlay.view.selectionRect = selectionMoveLatestRect
+            }
+            overlay.view.hidesSelectionChrome = false
+        }
+        selectionMovePreviewPanel?.close()
+        selectionMovePreviewPanel = nil
         selectionMoveStartRect = nil
         selectionMoveStartPanelFrame = nil
+        selectionMoveLatestRect = nil
+    }
+
+    private func makeSelectionMovePreviewPanel(for localRect: CGRect, overlay: Overlay) -> NSPanel {
+        let previewFrame = selectionMovePreviewFrame(for: localRect, overlay: overlay)
+        let previewView = SelectionOverlayView(frame: CGRect(origin: .zero, size: previewFrame.size))
+        previewView.showsDimming = false
+        previewView.showsHandles = true
+        previewView.isInteractive = false
+        previewView.selectionRect = CGRect(
+            x: SelectionMovePreview.padding,
+            y: SelectionMovePreview.padding,
+            width: localRect.width,
+            height: localRect.height
+        )
+        let panel = NSPanel(
+            contentRect: previewFrame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.contentView = previewView
+        panel.orderFrontRegardless()
+        return panel
+    }
+
+    private func selectionMovePreviewFrame(for localRect: CGRect, overlay: Overlay) -> CGRect {
+        let globalRect = overlay.panel.convertToScreen(localRect)
+        return globalRect.insetBy(dx: -SelectionMovePreview.padding, dy: -SelectionMovePreview.padding)
+    }
+
+    private func selectionMovePreviewOrigin(for localRect: CGRect, overlay: Overlay) -> CGPoint {
+        selectionMovePreviewFrame(for: localRect, overlay: overlay).origin
     }
 
     private func recordSelection() {
