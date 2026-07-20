@@ -123,17 +123,24 @@ final class RecordingControlConsoleView: NSView {
         layer?.borderWidth = 1
         layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
 
-        let fullScreen = makeModeButton(
+        let fullScreen = RecordingConsoleTileButton(
             title: "录制全屏画面",
             symbolName: "display",
-            action: #selector(fullScreenPressed)
+            accessibilityIdentifier: "gifpro.console.display",
+            action: { [weak self] in self?.fullScreenPressed() }
         )
-        let region = makeModeButton(
+        let region = RecordingConsoleTileButton(
             title: "录制屏幕区域",
             symbolName: "viewfinder",
-            action: #selector(regionPressed)
+            accessibilityIdentifier: "gifpro.console.viewfinder",
+            action: { [weak self] in self?.regionPressed() }
         )
-        let preferences = makePlainButton(title: "偏好设置", action: #selector(preferencesPressed))
+        let preferences = RecordingConsoleTileButton(
+            title: "偏好设置",
+            symbolName: "gearshape",
+            accessibilityIdentifier: "gifpro.console.preferences",
+            action: { [weak self] in self?.preferencesPressed() }
+        )
 
         let dragStrip = RecordingConsoleDragStripView()
         let optionStack = NSStackView(views: [fullScreen, region, preferences])
@@ -159,33 +166,115 @@ final class RecordingControlConsoleView: NSView {
         ])
     }
 
-    private func makeModeButton(title: String, symbolName: String, action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.isBordered = false
-        button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
-        button.imagePosition = .imageAbove
-        button.font = .systemFont(ofSize: 13, weight: .semibold)
-        button.contentTintColor = .white.withAlphaComponent(0.9)
-        button.toolTip = title
-        button.alignment = .center
-        button.setAccessibilityIdentifier("gifpro.console.\(symbolName)")
-        return button
+    private func fullScreenPressed() { onFullScreen() }
+    private func regionPressed() { onRegion() }
+    private func preferencesPressed() { onPreferences() }
+}
+
+@MainActor
+private final class RecordingConsoleTileButton: NSControl {
+    private let performAction: () -> Void
+    private let symbolView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private var isHovering = false { didSet { updateBackground() } }
+    private var isPressing = false { didSet { updateBackground() } }
+
+    init(
+        title: String,
+        symbolName: String,
+        accessibilityIdentifier: String,
+        action: @escaping () -> Void
+    ) {
+        self.performAction = action
+        super.init(frame: .zero)
+        self.toolTip = title
+        setAccessibilityIdentifier(accessibilityIdentifier)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
+        configure(title: title, symbolName: symbolName)
     }
 
-    private func makePlainButton(title: String, action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.isBordered = false
-        button.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: title)
-        button.imagePosition = .imageAbove
-        button.font = .systemFont(ofSize: 13, weight: .semibold)
-        button.contentTintColor = .white
-        button.setAccessibilityIdentifier("gifpro.console.preferences")
-        return button
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: NSSize { CGSize(width: 160, height: 84) }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(
+            NSTrackingArea(
+                rect: bounds,
+                options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+                owner: self,
+                userInfo: nil
+            )
+        )
     }
 
-    @objc private func fullScreenPressed() { onFullScreen() }
-    @objc private func regionPressed() { onRegion() }
-    @objc private func preferencesPressed() { onPreferences() }
+    override func mouseEntered(with event: NSEvent) { isHovering = true }
+    override func mouseExited(with event: NSEvent) { isHovering = false }
+
+    override func mouseDown(with event: NSEvent) {
+        isPressing = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let shouldFire = isPressing && bounds.contains(convert(event.locationInWindow, from: nil))
+        isPressing = false
+        if shouldFire { performAction() }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        performAction()
+        return true
+    }
+
+    private func configure(title: String, symbolName: String) {
+        wantsLayer = true
+        layer?.cornerRadius = 0
+
+        symbolView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
+        symbolView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 24, weight: .medium)
+        symbolView.contentTintColor = .white.withAlphaComponent(0.92)
+        symbolView.imageScaling = .scaleProportionallyUpOrDown
+        symbolView.translatesAutoresizingMaskIntoConstraints = false
+
+        titleLabel.stringValue = title
+        titleLabel.alignment = .center
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.textColor = .white.withAlphaComponent(0.94)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(symbolView)
+        addSubview(titleLabel)
+
+        NSLayoutConstraint.activate([
+            symbolView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            symbolView.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -13),
+            symbolView.widthAnchor.constraint(equalToConstant: 30),
+            symbolView.heightAnchor.constraint(equalToConstant: 30),
+
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            titleLabel.topAnchor.constraint(equalTo: symbolView.bottomAnchor, constant: 7),
+        ])
+
+        updateBackground()
+    }
+
+    private func updateBackground() {
+        let alpha: CGFloat
+        if isPressing {
+            alpha = 0.22
+        } else if isHovering {
+            alpha = 0.14
+        } else {
+            alpha = 0.06
+        }
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(alpha).cgColor
+    }
 }
 
 @MainActor

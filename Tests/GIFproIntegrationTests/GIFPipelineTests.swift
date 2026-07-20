@@ -106,7 +106,7 @@ final class GIFPipelineTests: XCTestCase {
         )
         XCTAssertEqual(
             (gifProperties[kCGImagePropertyGIFLoopCount] as? NSNumber)?.intValue,
-            0
+            1
         )
 
         let delays = try frameDelays(in: source)

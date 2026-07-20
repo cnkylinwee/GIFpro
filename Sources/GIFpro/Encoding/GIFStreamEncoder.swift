@@ -207,7 +207,7 @@ actor GIFStreamEncoder {
             destination,
             [
                 kCGImagePropertyGIFDictionary: [
-                    kCGImagePropertyGIFLoopCount: 0,
+                    kCGImagePropertyGIFLoopCount: 1,
                 ],
             ] as CFDictionary
         )

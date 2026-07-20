@@ -28,7 +28,7 @@ final class GIFStreamEncoderTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func testEncodesTimestampedFramesWithInfiniteLoopAndExpectedDelays() async throws {
+    func testEncodesTimestampedFramesWithSinglePlaybackAndExpectedDelays() async throws {
         let encoder = try GIFStreamEncoder(store: store, maximumFrames: 10)
         let first = await encoder.append(image: try solidImage(.red), timestamp: 0)
         let second = await encoder.append(image: try solidImage(.green), timestamp: 0.1)
@@ -45,7 +45,7 @@ final class GIFStreamEncoderTests: XCTestCase {
         XCTAssertEqual(CGImageSourceGetCount(source), 3)
         let container = try XCTUnwrap(CGImageSourceCopyProperties(source, nil) as? [CFString: Any])
         let gif = try XCTUnwrap(container[kCGImagePropertyGIFDictionary] as? [CFString: Any])
-        XCTAssertEqual((gif[kCGImagePropertyGIFLoopCount] as? NSNumber)?.intValue, 0)
+        XCTAssertEqual((gif[kCGImagePropertyGIFLoopCount] as? NSNumber)?.intValue, 1)
         XCTAssertEqual(try delays(in: source), [0.1, 0.2, 0.2])
     }
 
