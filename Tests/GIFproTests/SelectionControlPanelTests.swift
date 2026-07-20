@@ -338,15 +338,13 @@ final class SelectionControlPanelTests: XCTestCase {
         handle.mouseDown(with: try mouseEvent(type: .leftMouseDown, location: startPoint))
         handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: 72, y: 52)))
 
-        let previewPanel = try XCTUnwrap(controller.selectionMovePanel)
-        XCTAssertEqual(view.selectionRect, startSelection)
-        XCTAssertTrue(view.hidesSelectionChrome)
-        XCTAssertEqual(previewPanel.frame.origin, CGPoint(x: 294, y: 274))
+        XCTAssertNil(controller.selectionMovePanel)
+        XCTAssertEqual(view.selectionRect, CGRect(x: 310, y: 290, width: 500, height: 300))
+        XCTAssertFalse(view.hidesSelectionChrome)
         XCTAssertEqual(panel.frame.origin, CGPoint(x: startPanelFrame.minX + 60, y: startPanelFrame.minY + 40))
 
         handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: -10_000, y: -10_000)))
-        XCTAssertEqual(view.selectionRect, startSelection)
-        XCTAssertEqual(previewPanel.frame.origin, CGPoint(x: -16, y: -16))
+        XCTAssertEqual(view.selectionRect, CGRect(x: 0, y: 0, width: 500, height: 300))
         handle.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: CGPoint(x: -10_000, y: -10_000)))
 
         XCTAssertEqual(view.selectionRect, CGRect(x: 0, y: 0, width: 500, height: 300))
@@ -376,6 +374,25 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertEqual(view.selectionRect, CGRect(x: 250, y: 250, width: 500, height: 300))
         XCTAssertTrue(controller.lifecycleSnapshot.hasControlPanel)
         XCTAssertEqual(loader.loadedAssets, [.recordButton])
+    }
+
+    func testFullScreenModeShowsParameterControlsBeforeRecording() throws {
+        let controller = SelectionOverlayController(
+            imageLoader: StubTemplateControlImageLoader(),
+            environment: makeEnvironment(),
+            displayMonitor: StubSelectionOverlayDisplayMonitor()
+        )
+        var recordedRegions: [CaptureRegion] = []
+        controller.onRecord = { region, _ in recordedRegions.append(region) }
+
+        controller.show(mode: .fullScreen)
+        defer { controller.dismiss() }
+
+        let view = try XCTUnwrap(controller.selectionOverlayViews[42])
+        XCTAssertEqual(view.selectionRect, view.bounds)
+        XCTAssertFalse(view.isInteractive)
+        XCTAssertTrue(controller.lifecycleSnapshot.hasControlPanel)
+        XCTAssertTrue(recordedRegions.isEmpty)
     }
 
     func testRecordingVisualsPassThroughMouseExceptNarrowStopPanel() {

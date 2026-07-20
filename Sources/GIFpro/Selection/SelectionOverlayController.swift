@@ -162,7 +162,8 @@ final class SelectionOverlayController {
             overlay.view.selectionRect = defaultRect
             switch mode {
             case .fullScreen:
-                recordSelection()
+                overlay.view.isInteractive = false
+                presentControls(for: defaultRect, overlay: overlay)
             case .region:
                 presentControls(for: defaultRect, overlay: overlay)
             }
@@ -436,6 +437,15 @@ final class SelectionOverlayController {
     }
 
     private func presentControls(for localRect: CGRect, overlay: Overlay) {
+        if let controlPanel {
+            controlPanel.setFrame(
+                controlPanelFrame(for: localRect, overlay: overlay, panelSize: controlPanel.frame.size),
+                display: false
+            )
+            lifecycle.setControlPanel(true)
+            return
+        }
+
         controlPanel?.close()
         let controls = SelectionControlsView(
             settings: settings,
@@ -459,18 +469,8 @@ final class SelectionOverlayController {
 
         let size = controls.fittingSize
         let panelSize = CGSize(width: max(size.width, 500), height: max(size.height, 52))
-        let globalRect = overlay.panel.convertToScreen(localRect)
-        let screenFrame = overlay.display.frame
-        let proposedY = globalRect.minY - panelSize.height - 12
-        let y = proposedY >= screenFrame.minY
-            ? proposedY
-            : min(globalRect.maxY + 12, screenFrame.maxY - panelSize.height)
-        let x = min(
-            max(globalRect.midX - panelSize.width / 2, screenFrame.minX),
-            screenFrame.maxX - panelSize.width
-        )
         let panel = SelectionControlPanel(
-            contentRect: CGRect(origin: CGPoint(x: x, y: y), size: panelSize),
+            contentRect: controlPanelFrame(for: localRect, overlay: overlay, panelSize: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -488,6 +488,20 @@ final class SelectionOverlayController {
         lifecycle.setControlPanel(true)
     }
 
+    private func controlPanelFrame(for localRect: CGRect, overlay: Overlay, panelSize: CGSize) -> CGRect {
+        let globalRect = overlay.panel.convertToScreen(localRect)
+        let screenFrame = overlay.display.frame
+        let proposedY = globalRect.minY - panelSize.height - 12
+        let y = proposedY >= screenFrame.minY
+            ? proposedY
+            : min(globalRect.maxY + 12, screenFrame.maxY - panelSize.height)
+        let x = min(
+            max(globalRect.midX - panelSize.width / 2, screenFrame.minX),
+            screenFrame.maxX - panelSize.width
+        )
+        return CGRect(origin: CGPoint(x: x, y: y), size: panelSize)
+    }
+
     private func beginMovingSelection(displayID: CGDirectDisplayID) -> Bool {
         guard ownerDisplayID == displayID,
               let overlay = overlays[displayID],
@@ -497,8 +511,6 @@ final class SelectionOverlayController {
         selectionMoveStartRect = selectionRect
         selectionMoveStartPanelFrame = controlPanel.frame
         selectionMoveLatestRect = selectionRect
-        overlay.view.hidesSelectionChrome = true
-        selectionMovePreviewPanel = makeSelectionMovePreviewPanel(for: selectionRect, overlay: overlay)
         return true
     }
 
@@ -518,16 +530,16 @@ final class SelectionOverlayController {
             x: movedRect.minX - startRect.minX,
             y: movedRect.minY - startRect.minY
         )
-        if let previewPanel = selectionMovePreviewPanel {
-            previewPanel.setFrameOrigin(
-                selectionMovePreviewOrigin(for: movedRect, overlay: overlay)
-            )
-        }
-        controlPanel.setFrameOrigin(
-            CGPoint(
+        overlay.view.selectionRect = movedRect
+        controlPanel.setFrame(
+            CGRect(
+                origin: CGPoint(
                 x: startPanelFrame.minX + actualTranslation.x,
                 y: startPanelFrame.minY + actualTranslation.y
-            )
+                ),
+                size: startPanelFrame.size
+            ),
+            display: false
         )
     }
 
@@ -537,7 +549,6 @@ final class SelectionOverlayController {
             if let selectionMoveLatestRect {
                 overlay.view.selectionRect = selectionMoveLatestRect
             }
-            overlay.view.hidesSelectionChrome = false
         }
         selectionMovePreviewPanel?.close()
         selectionMovePreviewPanel = nil

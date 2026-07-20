@@ -1,7 +1,8 @@
 import AppKit
 
 enum RecordingControlConsoleMetrics {
-    static let size = CGSize(width: 500, height: 100)
+    static let size = CGSize(width: 560, height: 112)
+    static let dragStripHeight: CGFloat = 28
 }
 
 @MainActor
@@ -41,6 +42,7 @@ final class RecordingControlConsoleController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
+        panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentView = content
         panel.onClose = { [weak self] in self?.hide() }
@@ -61,7 +63,7 @@ final class RecordingControlConsoleController {
         let size = RecordingControlConsoleMetrics.size
         return CGRect(
             x: screen.midX - size.width / 2,
-            y: screen.maxY - size.height - 48,
+            y: screen.minY + screen.height * 0.28,
             width: size.width,
             height: size.height
         )
@@ -133,20 +135,22 @@ final class RecordingControlConsoleView: NSView {
         )
         let preferences = makePlainButton(title: "偏好设置", action: #selector(preferencesPressed))
 
-        let optionStack = NSStackView(views: [fullScreen, divider(), region])
+        let dragStrip = RecordingConsoleDragStripView()
+        let optionStack = NSStackView(views: [fullScreen, region, preferences])
         optionStack.orientation = .horizontal
-        optionStack.spacing = 0
-        optionStack.distribution = .fill
-        fullScreen.widthAnchor.constraint(equalTo: region.widthAnchor).isActive = true
+        optionStack.spacing = 1
+        optionStack.distribution = .fillEqually
+        optionStack.wantsLayer = true
+        optionStack.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
 
-        let root = NSStackView(views: [optionStack, preferences])
-        root.orientation = .horizontal
-        root.spacing = 10
-        root.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+        let root = NSStackView(views: [dragStrip, optionStack])
+        root.orientation = .vertical
+        root.spacing = 0
+        root.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         root.translatesAutoresizingMaskIntoConstraints = false
         addSubview(root)
 
-        preferences.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        dragStrip.heightAnchor.constraint(equalToConstant: RecordingControlConsoleMetrics.dragStripHeight).isActive = true
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: leadingAnchor),
             root.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -163,29 +167,40 @@ final class RecordingControlConsoleView: NSView {
         button.font = .systemFont(ofSize: 13, weight: .semibold)
         button.contentTintColor = .white.withAlphaComponent(0.9)
         button.toolTip = title
+        button.alignment = .center
         button.setAccessibilityIdentifier("gifpro.console.\(symbolName)")
         return button
     }
 
     private func makePlainButton(title: String, action: Selector) -> NSButton {
         let button = NSButton(title: title, target: self, action: action)
-        button.isBordered = true
-        button.bezelStyle = .rounded
-        button.font = .systemFont(ofSize: 12, weight: .medium)
+        button.isBordered = false
+        button.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: title)
+        button.imagePosition = .imageAbove
+        button.font = .systemFont(ofSize: 13, weight: .semibold)
         button.contentTintColor = .white
         button.setAccessibilityIdentifier("gifpro.console.preferences")
         return button
     }
 
-    private func divider() -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
-        view.widthAnchor.constraint(equalToConstant: 1).isActive = true
-        return view
-    }
-
     @objc private func fullScreenPressed() { onFullScreen() }
     @objc private func regionPressed() { onRegion() }
     @objc private func preferencesPressed() { onPreferences() }
+}
+
+@MainActor
+private final class RecordingConsoleDragStripView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
+        toolTip = "拖动控制台"
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
 }
