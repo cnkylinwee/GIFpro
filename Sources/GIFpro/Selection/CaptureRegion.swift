@@ -9,7 +9,7 @@ struct CaptureRegion: Equatable, Sendable {
     let backingScale: CGFloat
 }
 
-enum ResizeHandle: CaseIterable, Sendable {
+enum ResizeHandle: CaseIterable, Hashable, Sendable {
     case top
     case bottom
     case left

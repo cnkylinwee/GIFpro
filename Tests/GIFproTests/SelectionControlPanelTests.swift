@@ -225,6 +225,21 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertEqual(loader.loadedAssets, [.recordButton])
     }
 
+    func testTwoXScaleRemainsSelectableWhenDisplayIsOneX() throws {
+        let controls = SelectionControlsView(
+            settings: .init(scale: .two, fps: .twelve, duration: .thirty, showsCursor: true),
+            supportsTwoX: false,
+            imageLoader: StubTemplateControlImageLoader()
+        )
+        let scaleControl = try XCTUnwrap(controls.descendants
+            .compactMap { $0 as? NSSegmentedControl }
+            .first)
+
+        XCTAssertEqual(controls.settings.scale, .two)
+        XCTAssertTrue(scaleControl.isEnabled(forSegment: 1))
+        XCTAssertEqual(scaleControl.selectedSegment, 1)
+    }
+
     func testRecordButtonIsImageOnlyAccessibleAndInvokesCallback() throws {
         let controls = SelectionControlsView(
             settings: .default,

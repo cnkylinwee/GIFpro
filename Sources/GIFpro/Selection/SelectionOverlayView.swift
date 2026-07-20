@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 enum RecordingOverlayMousePolicy {
     static let selectionVisualsIgnoreMouseEvents = true
@@ -112,23 +113,6 @@ struct SelectionOverlayStyle: Equatable {
     }
 }
 
-enum SelectionOverlayInvalidation {
-    static let padding = ceil(
-        max(SelectionOverlayStyle.handleHitSize.width, SelectionOverlayStyle.handleHitSize.height) / 2
-            + SelectionOverlayStyle.borderWidth
-            + 2
-    )
-
-    static func dirtyRect(from oldRect: CGRect?, to newRect: CGRect?, within bounds: CGRect) -> CGRect {
-        let rects = [oldRect, newRect].compactMap(\.self)
-        guard !rects.isEmpty else { return .null }
-        let dirtyRect = rects.reduce(CGRect.null) { partialResult, rect in
-            partialResult.union(rect.insetBy(dx: -padding, dy: -padding))
-        }
-        return dirtyRect.intersection(bounds)
-    }
-}
-
 @MainActor
 final class SelectionOverlayPanel: NSPanel {
     var handlesEscape = true
@@ -180,23 +164,20 @@ final class SelectionOverlayView: NSView {
     var selectionRect: CGRect? {
         didSet {
             guard oldValue != selectionRect else { return }
-            let dirtyRect = SelectionOverlayInvalidation.dirtyRect(
-                from: oldValue,
-                to: selectionRect,
-                within: bounds
-            )
-            guard !dirtyRect.isNull, !dirtyRect.isEmpty else { return }
-            setNeedsDisplay(dirtyRect)
+            updateSelectionLayers()
         }
     }
     var showsDimming = true {
-        didSet { needsDisplay = true }
+        didSet { updateSelectionLayers() }
     }
     var showsHandles = true {
-        didSet { needsDisplay = true }
+        didSet { updateSelectionLayers() }
     }
     var isInteractive = true
 
+    private let dimmingLayer = CAShapeLayer()
+    private let borderLayer = CAShapeLayer()
+    private var handleLayers: [ResizeHandle: CAShapeLayer] = [:]
     private var dragAnchor: CGPoint?
     private var resizeHandle: ResizeHandle?
     private var resizeStartRect: CGRect?
@@ -208,6 +189,7 @@ final class SelectionOverlayView: NSView {
         notificationCenter = .default
         onRedrawRequested = nil
         super.init(frame: frameRect)
+        configureLayerRendering()
         observeSystemColorChanges()
     }
 
@@ -219,6 +201,7 @@ final class SelectionOverlayView: NSView {
         self.notificationCenter = notificationCenter
         self.onRedrawRequested = onRedrawRequested
         super.init(frame: frameRect)
+        configureLayerRendering()
         observeSystemColorChanges()
     }
 
@@ -226,6 +209,7 @@ final class SelectionOverlayView: NSView {
         notificationCenter = .default
         onRedrawRequested = nil
         super.init(coder: coder)
+        configureLayerRendering()
         observeSystemColorChanges()
     }
 
@@ -237,39 +221,11 @@ final class SelectionOverlayView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        if showsDimming {
-            NSColor.black.withAlphaComponent(0.35).setFill()
-            bounds.fill()
-        }
+    }
 
-        guard let selectionRect else { return }
-        if showsDimming {
-            NSGraphicsContext.saveGraphicsState()
-            NSColor.clear.setFill()
-            selectionRect.fill(using: .copy)
-            NSGraphicsContext.restoreGraphicsState()
-        }
-
-        let style: SelectionOverlayStyle = showsHandles ? .selecting : .recording
-        style.borderRole.color().setStroke()
-        let borderInset = SelectionOverlayStyle.borderWidth / 2
-        let border = NSBezierPath(rect: selectionRect.insetBy(dx: borderInset, dy: borderInset))
-        border.lineWidth = SelectionOverlayStyle.borderWidth
-        border.stroke()
-
-        for handle in ResizeHandle.allCases where showsHandles {
-            style.handleFillRole.color().setFill()
-            style.borderRole.color().setStroke()
-            let descriptor = style.handleRenderDescriptor(for: handle, selection: selectionRect)
-            let path = NSBezierPath(
-                roundedRect: descriptor.pathFrame,
-                xRadius: descriptor.pathCornerRadius,
-                yRadius: descriptor.pathCornerRadius
-            )
-            path.lineWidth = descriptor.strokeWidth
-            path.fill()
-            path.stroke()
-        }
+    override func layout() {
+        super.layout()
+        updateSelectionLayers()
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -351,6 +307,92 @@ final class SelectionOverlayView: NSView {
         SelectionOverlayStyle.selecting.hitHandle(at: point, selection: selection)
     }
 
+    private func configureLayerRendering() {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.masksToBounds = false
+
+        dimmingLayer.fillRule = .evenOdd
+        dimmingLayer.fillColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        layer?.addSublayer(dimmingLayer)
+
+        borderLayer.fillColor = NSColor.clear.cgColor
+        borderLayer.lineWidth = SelectionOverlayStyle.borderWidth
+        layer?.addSublayer(borderLayer)
+
+        for handle in ResizeHandle.allCases {
+            let handleLayer = CAShapeLayer()
+            handleLayer.lineWidth = SelectionOverlayStyle.borderWidth
+            handleLayers[handle] = handleLayer
+            layer?.addSublayer(handleLayer)
+        }
+        updateSelectionLayers()
+    }
+
+    private func updateSelectionLayers() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
+        let contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let rootBounds = bounds
+        [dimmingLayer, borderLayer].forEach {
+            $0.frame = rootBounds
+            $0.contentsScale = contentsScale
+        }
+        handleLayers.values.forEach {
+            $0.frame = rootBounds
+            $0.contentsScale = contentsScale
+        }
+
+        if showsDimming {
+            let dimmingPath = CGMutablePath()
+            dimmingPath.addRect(rootBounds)
+            if let selectionRect {
+                dimmingPath.addRect(selectionRect)
+            }
+            dimmingLayer.path = dimmingPath
+            dimmingLayer.isHidden = false
+        } else {
+            dimmingLayer.isHidden = true
+        }
+
+        guard let selectionRect else {
+            borderLayer.isHidden = true
+            handleLayers.values.forEach { $0.isHidden = true }
+            return
+        }
+
+        let style: SelectionOverlayStyle = showsHandles ? .selecting : .recording
+        borderLayer.isHidden = false
+        borderLayer.strokeColor = style.borderRole.color(with: effectiveAppearance).cgColor
+        borderLayer.path = CGPath(
+            rect: selectionRect.insetBy(
+                dx: SelectionOverlayStyle.borderWidth / 2,
+                dy: SelectionOverlayStyle.borderWidth / 2
+            ),
+            transform: nil
+        )
+
+        for handle in ResizeHandle.allCases {
+            guard let handleLayer = handleLayers[handle] else { continue }
+            guard showsHandles else {
+                handleLayer.isHidden = true
+                continue
+            }
+            let descriptor = style.handleRenderDescriptor(for: handle, selection: selectionRect)
+            handleLayer.isHidden = false
+            handleLayer.fillColor = style.handleFillRole.color(with: effectiveAppearance).cgColor
+            handleLayer.strokeColor = style.borderRole.color(with: effectiveAppearance).cgColor
+            handleLayer.path = CGPath(
+                roundedRect: descriptor.pathFrame,
+                cornerWidth: descriptor.pathCornerRadius,
+                cornerHeight: descriptor.pathCornerRadius,
+                transform: nil
+            )
+        }
+    }
+
     private func observeSystemColorChanges() {
         notificationCenter.addObserver(
             self,
@@ -365,7 +407,7 @@ final class SelectionOverlayView: NSView {
     }
 
     private func requestRedraw() {
-        needsDisplay = true
+        updateSelectionLayers()
         onRedrawRequested?()
     }
 }
@@ -397,21 +439,13 @@ final class SelectionControlsView: NSView {
         supportsTwoX: Bool,
         imageLoader: any TemplateControlImageLoading
     ) {
-        if !supportsTwoX, settings.scale == .two {
-            self.settings = RecordingSettings(
-                scale: .one,
-                fps: settings.fps,
-                duration: settings.duration,
-                showsCursor: settings.showsCursor
-            )
-        } else {
-            self.settings = settings
-        }
+        _ = supportsTwoX
+        self.settings = settings
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.96).cgColor
         layer?.cornerRadius = 10
-        scaleControl.setEnabled(supportsTwoX, forSegment: 1)
+        scaleControl.setEnabled(true, forSegment: 1)
         configureControls(imageLoader: imageLoader)
     }
 

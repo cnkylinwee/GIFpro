@@ -50,10 +50,12 @@ final class DisplayCoordinateConverterTests: XCTestCase {
         XCTAssertEqual(two.outputPixelSize, CGSize(width: 600, height: 400))
     }
 
-    func testOneXDisplayRejectsTwoXOutput() {
-        XCTAssertThrowsError(try makeRegion(backingScale: 1, outputScale: .two)) { error in
-            XCTAssertEqual(error as? DisplayCoordinateConverter.Error, .unsupportedOutputScale)
-        }
+    func testOneXDisplayAllowsTwoXOutput() throws {
+        let region = try makeRegion(backingScale: 1, outputScale: .two)
+
+        XCTAssertEqual(region.logicalPixelSize, CGSize(width: 300, height: 200))
+        XCTAssertEqual(region.outputPixelSize, CGSize(width: 600, height: 400))
+        XCTAssertEqual(region.backingScale, 1)
     }
 
     func testSelectionSmallerThanMinimumIsRejected() {

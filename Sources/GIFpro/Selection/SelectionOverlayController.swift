@@ -413,10 +413,9 @@ final class SelectionOverlayController {
 
     private func presentControls(for localRect: CGRect, overlay: Overlay) {
         controlPanel?.close()
-        let supportsTwoX = overlay.display.backingScaleFactor >= 2
         let controls = SelectionControlsView(
             settings: settings,
-            supportsTwoX: supportsTwoX,
+            supportsTwoX: true,
             imageLoader: imageLoader
         )
         let previousSettings = settings

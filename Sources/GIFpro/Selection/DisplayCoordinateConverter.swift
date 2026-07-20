@@ -5,7 +5,6 @@ struct DisplayCoordinateConverter: Sendable {
         case invalidBackingScale
         case selectionTooSmall
         case selectionOutsideDisplay
-        case unsupportedOutputScale
     }
 
     func convert(
@@ -21,8 +20,6 @@ struct DisplayCoordinateConverter: Sendable {
             throw Error.selectionTooSmall
         }
         guard displayFrame.contains(selection) else { throw Error.selectionOutsideDisplay }
-        guard CGFloat(outputScale.rawValue) <= backingScale else { throw Error.unsupportedOutputScale }
-
         let sourceRect = CGRect(
             x: selection.minX - displayFrame.minX,
             y: displayFrame.maxY - selection.maxY,
