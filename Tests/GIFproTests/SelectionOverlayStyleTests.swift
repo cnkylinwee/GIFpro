@@ -163,6 +163,30 @@ final class SelectionOverlayStyleTests: XCTestCase {
         )
     }
 
+    func testSelectionMoveInvalidationCoversOnlyOldAndNewSelectionArea() {
+        let oldRect = CGRect(x: 100, y: 80, width: 200, height: 160)
+        let newRect = CGRect(x: 180, y: 150, width: 200, height: 160)
+        let dirtyRect = SelectionOverlayInvalidation.dirtyRect(
+            from: oldRect,
+            to: newRect,
+            within: CGRect(x: 0, y: 0, width: 500, height: 400)
+        )
+
+        XCTAssertEqual(SelectionOverlayInvalidation.padding, 12)
+        XCTAssertEqual(dirtyRect, CGRect(x: 88, y: 68, width: 304, height: 254))
+        XCTAssertLessThan(dirtyRect.width * dirtyRect.height, 500 * 400)
+    }
+
+    func testSelectionInvalidationClipsToOverlayBounds() {
+        let dirtyRect = SelectionOverlayInvalidation.dirtyRect(
+            from: CGRect(x: 5, y: 5, width: 120, height: 90),
+            to: CGRect(x: 0, y: 0, width: 120, height: 90),
+            within: CGRect(x: 0, y: 0, width: 500, height: 400)
+        )
+
+        XCTAssertEqual(dirtyRect, CGRect(x: 0, y: 0, width: 137, height: 107))
+    }
+
     private func assertResize(
         handle: ResizeHandle,
         mouseDownPoint: CGPoint,

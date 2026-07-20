@@ -112,6 +112,23 @@ struct SelectionOverlayStyle: Equatable {
     }
 }
 
+enum SelectionOverlayInvalidation {
+    static let padding = ceil(
+        max(SelectionOverlayStyle.handleHitSize.width, SelectionOverlayStyle.handleHitSize.height) / 2
+            + SelectionOverlayStyle.borderWidth
+            + 2
+    )
+
+    static func dirtyRect(from oldRect: CGRect?, to newRect: CGRect?, within bounds: CGRect) -> CGRect {
+        let rects = [oldRect, newRect].compactMap(\.self)
+        guard !rects.isEmpty else { return .null }
+        let dirtyRect = rects.reduce(CGRect.null) { partialResult, rect in
+            partialResult.union(rect.insetBy(dx: -padding, dy: -padding))
+        }
+        return dirtyRect.intersection(bounds)
+    }
+}
+
 @MainActor
 final class SelectionOverlayPanel: NSPanel {
     var handlesEscape = true
@@ -161,7 +178,16 @@ final class SelectionOverlayView: NSView {
     var onSelectionCompleted: ((CGRect) -> Void)?
 
     var selectionRect: CGRect? {
-        didSet { needsDisplay = true }
+        didSet {
+            guard oldValue != selectionRect else { return }
+            let dirtyRect = SelectionOverlayInvalidation.dirtyRect(
+                from: oldValue,
+                to: selectionRect,
+                within: bounds
+            )
+            guard !dirtyRect.isNull, !dirtyRect.isEmpty else { return }
+            setNeedsDisplay(dirtyRect)
+        }
     }
     var showsDimming = true {
         didSet { needsDisplay = true }
