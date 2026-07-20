@@ -271,6 +271,74 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertEqual(recordCount, 3)
     }
 
+    func testSelectionDragHandleIsAccessibleAndReportsWindowTranslation() throws {
+        let controls = SelectionControlsView(
+            settings: .default,
+            supportsTwoX: true,
+            imageLoader: StubTemplateControlImageLoader()
+        )
+        let handle = try XCTUnwrap(controls.descendants
+            .compactMap { $0 as? SelectionDragHandleView }
+            .first)
+        var beganCount = 0
+        var translations: [CGPoint] = []
+        var endedCount = 0
+        controls.onMoveBegan = {
+            beganCount += 1
+            return true
+        }
+        controls.onMoveChanged = { translations.append($0) }
+        controls.onMoveEnded = { endedCount += 1 }
+
+        handle.mouseDown(with: try mouseEvent(type: .leftMouseDown, location: CGPoint(x: 10, y: 12)))
+        handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: 34, y: 4)))
+        handle.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: CGPoint(x: 34, y: 4)))
+
+        XCTAssertEqual(handle.identifier?.rawValue, "gifpro.selection-drag-handle")
+        XCTAssertEqual(handle.toolTip, "拖动以移动录制范围")
+        XCTAssertEqual(beganCount, 1)
+        XCTAssertEqual(translations, [CGPoint(x: 24, y: -8)])
+        XCTAssertEqual(endedCount, 1)
+    }
+
+    func testDraggingSelectionControlHandleMovesSelectionAndPanelWithinBounds() throws {
+        let controller = SelectionOverlayController(
+            imageLoader: StubTemplateControlImageLoader(),
+            environment: makeEnvironment(),
+            displayMonitor: StubSelectionOverlayDisplayMonitor()
+        )
+        controller.show()
+        defer { controller.dismiss() }
+
+        let panel = try XCTUnwrap(controller.selectionControlPanel)
+        let controls = try XCTUnwrap(panel.contentView as? SelectionControlsView)
+        let handle = try XCTUnwrap(controls.descendants
+            .compactMap { $0 as? SelectionDragHandleView }
+            .first)
+        let view = try XCTUnwrap(controller.selectionOverlayViews[42])
+        let startSelection = try XCTUnwrap(view.selectionRect)
+        let startPanelFrame = panel.frame
+        let startPoint = CGPoint(x: 12, y: 12)
+
+        handle.mouseDown(with: try mouseEvent(type: .leftMouseDown, location: startPoint))
+        handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: 72, y: 52)))
+
+        XCTAssertEqual(view.selectionRect, CGRect(x: 410, y: 340, width: 300, height: 200))
+        XCTAssertEqual(panel.frame.origin, CGPoint(x: startPanelFrame.minX + 60, y: startPanelFrame.minY + 40))
+
+        handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: -10_000, y: -10_000)))
+        handle.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: CGPoint(x: -10_000, y: -10_000)))
+
+        XCTAssertEqual(view.selectionRect, CGRect(x: 0, y: 0, width: 300, height: 200))
+        XCTAssertEqual(
+            panel.frame.origin,
+            CGPoint(
+                x: startPanelFrame.minX - startSelection.minX,
+                y: startPanelFrame.minY - startSelection.minY
+            )
+        )
+    }
+
     func testControllerPassesItsInjectedLoaderToSelectionControls() throws {
         let loader = StubTemplateControlImageLoader()
         let controller = SelectionOverlayController(
@@ -679,6 +747,22 @@ final class SelectionControlPanelTests: XCTestCase {
                 backingScaleFactor: 2
             ),
         ])
+    }
+
+    private func mouseEvent(type: NSEvent.EventType, location: CGPoint) throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: type,
+                location: location,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1
+            )
+        )
     }
 
     private enum StopInvalidation {

@@ -175,8 +175,6 @@ final class SelectionOverlayView: NSView {
     private var resizeHandle: ResizeHandle?
     private var resizeStartRect: CGRect?
     private var resizeStartPoint: CGPoint?
-    private var moveStartRect: CGRect?
-    private var moveStartPoint: CGPoint?
     private let notificationCenter: NotificationCenter
     private let onRedrawRequested: (() -> Void)?
 
@@ -262,11 +260,6 @@ final class SelectionOverlayView: NSView {
             resizeStartPoint = point
             return
         }
-        if let selectionRect, selectionRect.contains(point) {
-            moveStartRect = selectionRect
-            moveStartPoint = point
-            return
-        }
         guard onDragBegan?() == true else { return }
         dragAnchor = point
         selectionRect = CGRect(origin: point, size: .zero)
@@ -282,14 +275,6 @@ final class SelectionOverlayView: NSView {
             selectionRect = SelectionGeometry.resized(
                 startRect,
                 handle: handle,
-                translation: translation,
-                within: bounds
-            )
-        } else if let startRect = moveStartRect,
-                  let startPoint = moveStartPoint {
-            let translation = CGPoint(x: point.x - startPoint.x, y: point.y - startPoint.y)
-            selectionRect = SelectionGeometry.moved(
-                startRect,
                 translation: translation,
                 within: bounds
             )
@@ -309,8 +294,6 @@ final class SelectionOverlayView: NSView {
         resizeHandle = nil
         resizeStartRect = nil
         resizeStartPoint = nil
-        moveStartRect = nil
-        moveStartPoint = nil
         onSelectionCompleted?(selectionRect)
     }
 
@@ -366,8 +349,18 @@ final class SelectionControlsView: NSView {
     var onSettingsChanged: ((RecordingSettings) -> Void)?
     var onRecord: (() -> Void)?
     var onCancel: (() -> Void)?
+    var onMoveBegan: (() -> Bool)? {
+        didSet { dragHandle.onMoveBegan = onMoveBegan }
+    }
+    var onMoveChanged: ((CGPoint) -> Void)? {
+        didSet { dragHandle.onMoveChanged = onMoveChanged }
+    }
+    var onMoveEnded: (() -> Void)? {
+        didSet { dragHandle.onMoveEnded = onMoveEnded }
+    }
 
     private(set) var settings: RecordingSettings
+    private let dragHandle = SelectionDragHandleView()
     private let scaleControl = NSSegmentedControl(labels: ["1×", "2×"], trackingMode: .selectOne, target: nil, action: nil)
     private let fpsControl = NSSegmentedControl(labels: ["8", "12", "15"], trackingMode: .selectOne, target: nil, action: nil)
     private let durationControl = NSSegmentedControl(labels: ["15s", "30s", "60s", "90s"], trackingMode: .selectOne, target: nil, action: nil)
@@ -426,7 +419,7 @@ final class SelectionControlsView: NSView {
         record.action = #selector(recordPressed)
         record.keyEquivalent = "\r"
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelPressed))
-        let stack = NSStackView(views: [scaleControl, fpsControl, durationControl, cursorControl, record, cancel])
+        let stack = NSStackView(views: [dragHandle, scaleControl, fpsControl, durationControl, cursorControl, record, cancel])
         stack.orientation = .horizontal
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
@@ -455,4 +448,78 @@ final class SelectionControlsView: NSView {
 
     @objc private func recordPressed() { onRecord?() }
     @objc private func cancelPressed() { onCancel?() }
+}
+
+@MainActor
+final class SelectionDragHandleView: NSView {
+    var onMoveBegan: (() -> Bool)?
+    var onMoveChanged: ((CGPoint) -> Void)?
+    var onMoveEnded: (() -> Void)?
+
+    private var dragStartPoint: CGPoint?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: NSSize { CGSize(width: 22, height: 32) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        NSColor.tertiaryLabelColor.setFill()
+        let dotSize = CGSize(width: 3, height: 3)
+        let spacing: CGFloat = 5
+        let startX = bounds.midX - spacing / 2 - dotSize.width
+        let startY = bounds.midY - spacing / 2 - dotSize.height
+        for column in 0..<2 {
+            for row in 0..<2 {
+                let rect = CGRect(
+                    x: startX + CGFloat(column) * (dotSize.width + spacing),
+                    y: startY + CGFloat(row) * (dotSize.height + spacing),
+                    width: dotSize.width,
+                    height: dotSize.height
+                )
+                NSBezierPath(ovalIn: rect).fill()
+            }
+        }
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard onMoveBegan?() == true else { return }
+        dragStartPoint = event.locationInWindow
+        NSCursor.closedHand.set()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragStartPoint else { return }
+        onMoveChanged?(
+            CGPoint(
+                x: event.locationInWindow.x - dragStartPoint.x,
+                y: event.locationInWindow.y - dragStartPoint.y
+            )
+        )
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard dragStartPoint != nil else { return }
+        dragStartPoint = nil
+        NSCursor.openHand.set()
+        onMoveEnded?()
+    }
+
+    private func commonInit() {
+        identifier = NSUserInterfaceItemIdentifier("gifpro.selection-drag-handle")
+        toolTip = "拖动以移动录制范围"
+        setAccessibilityElement(true)
+        setAccessibilityRole(.handle)
+        setAccessibilityLabel("移动录制范围")
+    }
 }

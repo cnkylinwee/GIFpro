@@ -67,6 +67,8 @@ final class SelectionOverlayController {
     private var controlPanel: NSPanel?
     private var statusPanel: NSPanel?
     private var stopPanel: NSPanel?
+    private var selectionMoveStartRect: CGRect?
+    private var selectionMoveStartPanelFrame: CGRect?
     private var settings = RecordingSettings.default
     private var lifecycle = RecordingOverlayLifecycle()
     private(set) var stopActionTarget: OneShotActionTarget?
@@ -84,6 +86,8 @@ final class SelectionOverlayController {
     var selectionOverlayViews: [CGDirectDisplayID: SelectionOverlayView] {
         overlays.mapValues(\.view)
     }
+
+    var selectionControlPanel: NSPanel? { controlPanel }
 
     init(
         converter: DisplayCoordinateConverter = DisplayCoordinateConverter(),
@@ -424,6 +428,11 @@ final class SelectionOverlayController {
         }
         controls.onRecord = { [weak self] in self?.recordSelection() }
         controls.onCancel = { [weak self] in self?.cancelSelection() }
+        controls.onMoveBegan = { [weak self] in self?.beginMovingSelection(displayID: overlay.display.displayID) ?? false }
+        controls.onMoveChanged = { [weak self] translation in
+            self?.moveSelection(displayID: overlay.display.displayID, translation: translation)
+        }
+        controls.onMoveEnded = { [weak self] in self?.endMovingSelection() }
 
         let size = controls.fittingSize
         let panelSize = CGSize(width: max(size.width, 500), height: max(size.height, 52))
@@ -454,6 +463,45 @@ final class SelectionOverlayController {
         panel.makeKey()
         controlPanel = panel
         lifecycle.setControlPanel(true)
+    }
+
+    private func beginMovingSelection(displayID: CGDirectDisplayID) -> Bool {
+        guard ownerDisplayID == displayID,
+              let overlay = overlays[displayID],
+              let selectionRect = overlay.view.selectionRect,
+              let controlPanel else { return false }
+        selectionMoveStartRect = selectionRect
+        selectionMoveStartPanelFrame = controlPanel.frame
+        return true
+    }
+
+    private func moveSelection(displayID: CGDirectDisplayID, translation: CGPoint) {
+        guard ownerDisplayID == displayID,
+              let overlay = overlays[displayID],
+              let startRect = selectionMoveStartRect,
+              let startPanelFrame = selectionMoveStartPanelFrame,
+              let controlPanel else { return }
+        let movedRect = SelectionGeometry.moved(
+            startRect,
+            translation: translation,
+            within: overlay.view.bounds
+        )
+        overlay.view.selectionRect = movedRect
+        let actualTranslation = CGPoint(
+            x: movedRect.minX - startRect.minX,
+            y: movedRect.minY - startRect.minY
+        )
+        controlPanel.setFrameOrigin(
+            CGPoint(
+                x: startPanelFrame.minX + actualTranslation.x,
+                y: startPanelFrame.minY + actualTranslation.y
+            )
+        )
+    }
+
+    private func endMovingSelection() {
+        selectionMoveStartRect = nil
+        selectionMoveStartPanelFrame = nil
     }
 
     private func recordSelection() {

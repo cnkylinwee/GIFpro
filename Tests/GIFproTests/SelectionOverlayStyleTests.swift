@@ -126,7 +126,7 @@ final class SelectionOverlayStyleTests: XCTestCase {
         }
     }
 
-    func testDraggingInsideSelectionAwayFromHandlesMovesSelectionWithoutResizing() throws {
+    func testDraggingInsideSelectionAwayFromHandlesCreatesNewSelection() throws {
         let view = makeView()
         view.selectionRect = selection
         let start = CGPoint(x: selection.midX, y: selection.midY)
@@ -136,23 +136,7 @@ final class SelectionOverlayStyleTests: XCTestCase {
         view.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: end))
         view.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: end))
 
-        XCTAssertEqual(
-            view.selectionRect,
-            CGRect(x: selection.minX + 80, y: selection.minY + 70, width: 200, height: 160)
-        )
-    }
-
-    func testDraggingInsideSelectionClampsMovementToBounds() throws {
-        let view = makeView()
-        view.selectionRect = selection
-        let start = CGPoint(x: selection.midX, y: selection.midY)
-        let end = CGPoint(x: start.x + 1_000, y: start.y - 1_000)
-
-        view.mouseDown(with: try mouseEvent(type: .leftMouseDown, location: start))
-        view.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: end))
-        view.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: end))
-
-        XCTAssertEqual(view.selectionRect, CGRect(x: 300, y: 0, width: 200, height: 160))
+        XCTAssertEqual(view.selectionRect, CGRect(x: start.x, y: start.y, width: 80, height: 70))
     }
 
     func testDraggingOutsideSelectionStillCreatesNewSelection() throws {
