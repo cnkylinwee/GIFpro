@@ -45,21 +45,21 @@ assert_bundle_assets() {
     while IFS= read -r -d '' _resource_file <&4; do
         regular_file_count=$((regular_file_count + 1))
         case "$_resource_file" in
-            "$bundled_resources/RecordButton.png"|"$bundled_resources/StopButton.png") ;;
+            "$bundled_resources/RecordButton.png"|"$bundled_resources/StopButton.png"|"$bundled_resources/AppIcon.icns") ;;
             *) has_unexpected_regular_file=1 ;;
         esac
     done
     exec 4<&-
     rm -f "$resource_file_list"
-    if [ "$regular_file_count" -ne 2 ]; then
-        echo "error: $configuration bundle resources must contain exactly 2 regular files; found $regular_file_count" >&2
+    if [ "$regular_file_count" -ne 3 ]; then
+        echo "error: $configuration bundle resources must contain exactly 3 regular files; found $regular_file_count" >&2
         exit 1
     fi
     if [ "$has_unexpected_regular_file" -ne 0 ]; then
         echo "error: $configuration bundle resources contain an unexpected regular file" >&2
         exit 1
     fi
-    for asset_name in RecordButton.png StopButton.png; do
+    for asset_name in RecordButton.png StopButton.png AppIcon.icns; do
         if [ ! -f "$bundled_resources/$asset_name" ]; then
             echo "error: $configuration bundle is missing $asset_name" >&2
             exit 1
@@ -143,7 +143,7 @@ if (assert_bundle_assets debug) >"$log_file" 2>&1; then
     echo "error: debug bundle assertion accepted an unexpected regular file" >&2
     exit 1
 fi
-assert_single_diagnostic "error: debug bundle resources must contain exactly 2 regular files; found 3"
+assert_single_diagnostic "error: debug bundle resources must contain exactly 3 regular files; found 4"
 
 "$linked_project/Scripts/build-app.sh" release
 assert_bundle_assets release
@@ -165,6 +165,10 @@ fi
 codesign --verify --deep --strict "$app_bundle"
 plutil -lint "$app_contents/Info.plist"
 cmp "$project_root/Resources/Info.plist" "$app_contents/Info.plist"
+if [ "$(plutil -extract CFBundleIconFile raw -o - "$app_contents/Info.plist")" != "AppIcon" ]; then
+    echo "error: release bundle does not declare AppIcon" >&2
+    exit 1
+fi
 app_bytes="$(find "$app_bundle" -type f -exec stat -f '%z' {} \; | awk '{ total += $1 } END { printf "%.0f\n", total }')"
 if [ "$app_bytes" -ge $((10 * 1024 * 1024)) ]; then
     echo "error: release app is not below 10 MB: $app_bytes bytes" >&2

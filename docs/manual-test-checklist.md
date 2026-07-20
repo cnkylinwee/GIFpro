@@ -20,8 +20,8 @@
 | 完整测试套件 | PASS（仅当前 macOS 27） | `swift test --parallel --scratch-path /tmp/GIFpro-task5-parallel` 连续 3 轮：每轮 237 XCTest + 20 Swift Testing，0 失败，2026-07-17 |
 | 严格并发与警告检查 | PASS（仅当前 macOS 27） | `swift test -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors --scratch-path /tmp/GIFpro-task5-strict`：237 XCTest + 20 Swift Testing，0 失败；运行时出现非失败的 CoreData/AppKit XPC 诊断，2026-07-17 |
 | capture failure 确定性回归 | PASS（仅当前 macOS 27） | 定向 filter 连续 10 轮：每轮 1 test，0 失败；使用 handler-installed continuation 与可控 stop scheduler，不依赖 sleep/yield 次数，2026-07-17 |
-| 控制图资源验证与打包回归 | PASS（仅当前 macOS 27） | shell 共 7 个场景：有效/缺失/截断 PNG fixture、`stat` 故障注入、Debug/Release 打包、额外 regular file 拒绝；两图均逐字节一致且资源集合精确为 2，2026-07-20 |
-| arm64 Release 构建和应用包检查 | PASS（仅当前 macOS 27） | arm64；1,112,085 bytes（5 files，`du` 1.1M）；系统库 only；ad-hoc 签名有效；两张 PNG 与仓库一致；启动/退出探测成功；2026-07-17 |
+| 控制图资源与应用图标打包回归 | PASS（仅当前 macOS 27） | shell 共 7 个场景：有效/缺失/截断 PNG fixture、`stat` 故障注入、Debug/Release 打包、额外 regular file 拒绝；两张控制 PNG 和 `AppIcon.icns` 均逐字节一致且资源集合精确为 3，2026-07-20 |
+| arm64 Release 构建和应用包检查 | PASS（仅当前 macOS 27） | arm64；1,212,189 bytes（6 files，`du` 1.2M）；系统库 only；ad-hoc 签名有效；两张 PNG 与 `AppIcon.icns` 和仓库一致；启动/退出探测成功；2026-07-20 |
 | 当前系统 ImageIO 兼容性测试 | PASS（不替代 macOS 14 门槛） | 2/2，0 失败，macOS 27，2026-07-17 |
 | macOS 14 ImageIO 兼容性门槛 | PENDING | 必须在 macOS 14 Apple Silicon 执行 |
 | macOS 14 完整测试套件 | PENDING | 必须在 macOS 14 Apple Silicon 执行 |

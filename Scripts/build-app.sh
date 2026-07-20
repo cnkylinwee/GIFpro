@@ -26,7 +26,7 @@ rm -rf "$app_contents"
 mkdir -p "$app_contents/MacOS" "$app_contents/Resources"
 cp "$executable" "$app_contents/MacOS/GIFpro"
 cp "$project_root/Resources/Info.plist" "$app_contents/Info.plist"
-for asset_name in RecordButton.png StopButton.png; do
+for asset_name in RecordButton.png StopButton.png AppIcon.icns; do
     cp "$project_root/Resources/$asset_name" "$app_contents/Resources/$asset_name"
     if ! cmp "$project_root/Resources/$asset_name" "$app_contents/Resources/$asset_name"; then
         echo "error: copied control asset differs: $asset_name" >&2

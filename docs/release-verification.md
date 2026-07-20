@@ -16,12 +16,13 @@
 | `swift build -c release --arch arm64` | PASS |
 | `./Scripts/build-app.sh release` | PASS；脚本内全部发布断言通过 |
 | `Scripts/validate-control-assets.sh` | PASS；显式目录；`sips` PNG 格式检查并实际解码；有效、缺失、截断 PNG 3 个隔离 fixture 均符合预期且失败诊断唯一；截断 fixture 保留真实 PNG 前 64 bytes，`sips -g format` 仍报告 png、实际 decode gate 拒绝 |
-| `Tests/ScriptTests/BuildAppReleaseChecksTests.sh` | PASS；共 7 个场景：3 个 validator fixture、注入 `stat` 失败、含空格路径的 Debug/Release 构建、带换行文件名的额外 regular file 拒绝；两个配置的资源集合均精确为两张逐字节相同的 PNG |
+| `Tests/ScriptTests/BuildAppReleaseChecksTests.sh` | PASS；共 7 个场景：3 个 validator fixture、注入 `stat` 失败、含空格路径的 Debug/Release 构建、带换行文件名的额外 regular file 拒绝；两个配置的资源集合均精确为两张逐字节相同的 PNG 和 `AppIcon.icns` |
 | `codesign --verify --deep --strict .build/app/GIFpro.app` | PASS（无诊断输出） |
 | `lipo -archs .build/app/GIFpro.app/Contents/MacOS/GIFpro` | `arm64` |
-| `du -sh .build/app/GIFpro.app` | `1.1M` |
-| 精确文件逻辑字节数 | `1,112,085` bytes（5 files，包含资源） |
-| `cmp`（两张源 PNG 与应用包资源） | PASS；`RecordButton.png` 和 `StopButton.png` 均无差异 |
+| `du -sh .build/app/GIFpro.app` | `1.2M` |
+| 精确文件逻辑字节数 | `1,212,189` bytes（6 files，包含资源） |
+| `cmp`（源资源与应用包资源） | PASS；`RecordButton.png`、`StopButton.png` 和 `AppIcon.icns` 均无差异 |
+| `CFBundleIconFile` | `AppIcon` |
 | `otool -L` | 所有路径均位于 `/System/Library` 或 `/usr/lib` |
 | `plutil -lint`（源与应用包 Info.plist） | 均为 `OK` |
 | `diff -u`（源与应用包 Info.plist） | 无差异 |
