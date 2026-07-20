@@ -175,6 +175,8 @@ final class SelectionOverlayView: NSView {
     private var resizeHandle: ResizeHandle?
     private var resizeStartRect: CGRect?
     private var resizeStartPoint: CGPoint?
+    private var moveStartRect: CGRect?
+    private var moveStartPoint: CGPoint?
     private let notificationCenter: NotificationCenter
     private let onRedrawRequested: (() -> Void)?
 
@@ -260,6 +262,11 @@ final class SelectionOverlayView: NSView {
             resizeStartPoint = point
             return
         }
+        if let selectionRect, selectionRect.contains(point) {
+            moveStartRect = selectionRect
+            moveStartPoint = point
+            return
+        }
         guard onDragBegan?() == true else { return }
         dragAnchor = point
         selectionRect = CGRect(origin: point, size: .zero)
@@ -275,6 +282,14 @@ final class SelectionOverlayView: NSView {
             selectionRect = SelectionGeometry.resized(
                 startRect,
                 handle: handle,
+                translation: translation,
+                within: bounds
+            )
+        } else if let startRect = moveStartRect,
+                  let startPoint = moveStartPoint {
+            let translation = CGPoint(x: point.x - startPoint.x, y: point.y - startPoint.y)
+            selectionRect = SelectionGeometry.moved(
+                startRect,
                 translation: translation,
                 within: bounds
             )
@@ -294,6 +309,8 @@ final class SelectionOverlayView: NSView {
         resizeHandle = nil
         resizeStartRect = nil
         resizeStartPoint = nil
+        moveStartRect = nil
+        moveStartPoint = nil
         onSelectionCompleted?(selectionRect)
     }
 

@@ -126,7 +126,7 @@ final class SelectionOverlayStyleTests: XCTestCase {
         }
     }
 
-    func testDraggingInsideSelectionAwayFromHandlesCreatesNewSelection() throws {
+    func testDraggingInsideSelectionAwayFromHandlesMovesSelectionWithoutResizing() throws {
         let view = makeView()
         view.selectionRect = selection
         let start = CGPoint(x: selection.midX, y: selection.midY)
@@ -136,7 +136,47 @@ final class SelectionOverlayStyleTests: XCTestCase {
         view.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: end))
         view.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: end))
 
+        XCTAssertEqual(
+            view.selectionRect,
+            CGRect(x: selection.minX + 80, y: selection.minY + 70, width: 200, height: 160)
+        )
+    }
+
+    func testDraggingInsideSelectionClampsMovementToBounds() throws {
+        let view = makeView()
+        view.selectionRect = selection
+        let start = CGPoint(x: selection.midX, y: selection.midY)
+        let end = CGPoint(x: start.x + 1_000, y: start.y - 1_000)
+
+        view.mouseDown(with: try mouseEvent(type: .leftMouseDown, location: start))
+        view.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: end))
+        view.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: end))
+
+        XCTAssertEqual(view.selectionRect, CGRect(x: 300, y: 0, width: 200, height: 160))
+    }
+
+    func testDraggingOutsideSelectionStillCreatesNewSelection() throws {
+        let view = makeView()
+        view.selectionRect = selection
+        let start = CGPoint(x: 20, y: 20)
+        let end = CGPoint(x: 100, y: 90)
+
+        view.mouseDown(with: try mouseEvent(type: .leftMouseDown, location: start))
+        view.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: end))
+        view.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: end))
+
         XCTAssertEqual(view.selectionRect, CGRect(x: start.x, y: start.y, width: 80, height: 70))
+    }
+
+    func testDefaultSelectionRectIsCenteredAtThreeHundredByTwoHundred() {
+        XCTAssertEqual(
+            SelectionGeometry.defaultRect(within: CGRect(x: 0, y: 0, width: 500, height: 400)),
+            CGRect(x: 100, y: 100, width: 300, height: 200)
+        )
+        XCTAssertEqual(
+            SelectionGeometry.defaultRect(within: CGRect(x: 0, y: 0, width: 240, height: 160)),
+            CGRect(x: 0, y: 0, width: 240, height: 160)
+        )
     }
 
     private func assertResize(

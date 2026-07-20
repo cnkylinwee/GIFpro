@@ -133,6 +133,13 @@ final class SelectionOverlayController {
         for display in displays {
             installOverlay(for: display)
         }
+        if let defaultDisplay = displays.first,
+           let overlay = overlays[defaultDisplay.displayID],
+           claimOwnership(displayID: defaultDisplay.displayID) {
+            let defaultRect = SelectionGeometry.defaultRect(within: overlay.view.bounds)
+            overlay.view.selectionRect = defaultRect
+            presentControls(for: defaultRect, overlay: overlay)
+        }
         displayMonitor.start { [weak self] change in
             guard let self else { return }
             self.handleDisplayConfigurationChange(change)

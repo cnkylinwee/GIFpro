@@ -22,6 +22,7 @@ enum ResizeHandle: CaseIterable, Sendable {
 
 enum SelectionGeometry {
     static let minimumSize = CGSize(width: 64, height: 64)
+    static let defaultSize = CGSize(width: 300, height: 200)
 
     static func resized(
         _ rect: CGRect,
@@ -48,6 +49,32 @@ enum SelectionGeometry {
         }
 
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    static func moved(
+        _ rect: CGRect,
+        translation: CGPoint,
+        within bounds: CGRect
+    ) -> CGRect {
+        let width = min(rect.width, bounds.width)
+        let height = min(rect.height, bounds.height)
+        return CGRect(
+            x: min(max(rect.minX + translation.x, bounds.minX), bounds.maxX - width),
+            y: min(max(rect.minY + translation.y, bounds.minY), bounds.maxY - height),
+            width: width,
+            height: height
+        )
+    }
+
+    static func defaultRect(within bounds: CGRect) -> CGRect {
+        let width = min(defaultSize.width, bounds.width)
+        let height = min(defaultSize.height, bounds.height)
+        return CGRect(
+            x: bounds.midX - width / 2,
+            y: bounds.midY - height / 2,
+            width: width,
+            height: height
+        )
     }
 }
 

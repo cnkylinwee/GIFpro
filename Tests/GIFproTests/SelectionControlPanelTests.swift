@@ -281,12 +281,10 @@ final class SelectionControlPanelTests: XCTestCase {
         controller.show()
         defer { controller.dismiss() }
 
-        let (_, view) = try XCTUnwrap(controller.selectionOverlayViews.first)
-        XCTAssertTrue(view.onDragBegan?() == true)
-        let selection = CGRect(x: 80, y: 80, width: 160, height: 120)
-        view.selectionRect = selection
-        view.onSelectionCompleted?(selection)
+        let view = try XCTUnwrap(controller.selectionOverlayViews[42])
 
+        XCTAssertEqual(view.selectionRect, CGRect(x: 350, y: 300, width: 300, height: 200))
+        XCTAssertTrue(controller.lifecycleSnapshot.hasControlPanel)
         XCTAssertEqual(loader.loadedAssets, [.recordButton])
     }
 
@@ -512,13 +510,11 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertEqual(monitor.startCount, 1)
         XCTAssertEqual(controller.lifecycleSnapshot.phase, .selecting)
         XCTAssertEqual(controller.lifecycleSnapshot.overlayDisplayIDs, [7, 8])
+        XCTAssertEqual(controller.lifecycleSnapshot.ownerDisplayID, 7)
+        XCTAssertTrue(controller.lifecycleSnapshot.hasControlPanel)
 
         let ownerView = try XCTUnwrap(controller.selectionOverlayViews[7])
-        XCTAssertTrue(ownerView.onDragBegan?() == true)
-        let selection = CGRect(x: 100, y: 100, width: 200, height: 100)
-        ownerView.selectionRect = selection
-        ownerView.onSelectionCompleted?(selection)
-        XCTAssertTrue(controller.lifecycleSnapshot.hasControlPanel)
+        XCTAssertEqual(ownerView.selectionRect, CGRect(x: 50, y: 50, width: 300, height: 200))
 
         controller.showCountdown(value: 3, targetDisplayID: 7)
         XCTAssertEqual(controller.lifecycleSnapshot.phase, .countingDown)
