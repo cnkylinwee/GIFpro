@@ -65,6 +65,29 @@ final class SelectionControlPanelTests: XCTestCase {
         }
     }
 
+    func testTemplateControlButtonReresolvesTintAndRedrawsForSystemColorChanges() {
+        let notifications = NotificationCenter()
+        let button = TemplateControlButton(
+            image: NSImage(size: CGSize(width: 24, height: 24)),
+            semanticTint: .accent,
+            notificationCenter: notifications
+        )
+        button.needsDisplay = false
+        let previousGeneration = button.resolvedVisualState.redrawRequestGeneration
+
+        notifications.post(name: NSColor.systemColorsDidChangeNotification, object: nil)
+
+        XCTAssertGreaterThan(
+            button.resolvedVisualState.redrawRequestGeneration,
+            previousGeneration
+        )
+        XCTAssertEqual(button.resolvedVisualState.interaction, .normal)
+        assertColor(
+            button.resolvedVisualState.tintColor,
+            equals: resolvedColor(.controlAccentColor, appearance: button.effectiveAppearance)
+        )
+    }
+
     func testAuxiliaryStatusContentMovesFromCountdownToRecordingAndStopping() {
         XCTAssertEqual(RecordingOverlayStatusContent.countdown(3), "3")
         XCTAssertEqual(

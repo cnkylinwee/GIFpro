@@ -30,6 +30,7 @@ struct TemplateControlVisualState {
 @MainActor
 final class TemplateControlButton: NSButton {
     private let semanticTint: TemplateControlSemanticTint
+    private let notificationCenter: NotificationCenter
     private var isExplicitlyHighlighted = false
     private(set) var resolvedVisualState = TemplateControlVisualState(
         interaction: .normal,
@@ -39,8 +40,13 @@ final class TemplateControlButton: NSButton {
     )
     private var redrawRequestGeneration: UInt = 0
 
-    init(image: NSImage, semanticTint: TemplateControlSemanticTint) {
+    init(
+        image: NSImage,
+        semanticTint: TemplateControlSemanticTint,
+        notificationCenter: NotificationCenter = .default
+    ) {
         self.semanticTint = semanticTint
+        self.notificationCenter = notificationCenter
         super.init(frame: .zero)
 
         let templateImage = (image.copy() as? NSImage) ?? NSImage(size: image.size)
@@ -56,7 +62,21 @@ final class TemplateControlButton: NSButton {
             widthAnchor.constraint(equalToConstant: 44),
             heightAnchor.constraint(equalToConstant: 44),
         ])
+        notificationCenter.addObserver(
+            self,
+            selector: #selector(systemColorsDidChange),
+            name: NSColor.systemColorsDidChangeNotification,
+            object: nil
+        )
         updateVisualState()
+    }
+
+    deinit {
+        notificationCenter.removeObserver(
+            self,
+            name: NSColor.systemColorsDidChangeNotification,
+            object: nil
+        )
     }
 
     @available(*, unavailable)
@@ -84,6 +104,10 @@ final class TemplateControlButton: NSButton {
         guard isEnabled else { return false }
         performClick(nil)
         return true
+    }
+
+    @objc private func systemColorsDidChange() {
+        updateVisualState()
     }
 
     private func updateVisualState() {
