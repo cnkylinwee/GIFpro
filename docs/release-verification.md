@@ -15,8 +15,8 @@
 | `swift test --filter RecordingCoordinatorTests.testRuntimeSystemCaptureFailureFinalizesWithNotice` | PASS；连续 10 轮，每轮 1 test，0 failures |
 | `swift build -c release --arch arm64` | PASS |
 | `./Scripts/build-app.sh release` | PASS；脚本内全部发布断言通过 |
-| `Scripts/validate-control-assets.sh` | PASS；显式目录；`sips` PNG 格式检查并实际解码；有效、缺失、损坏 3 个隔离 fixture 均符合预期且失败诊断唯一 |
-| `Tests/ScriptTests/BuildAppReleaseChecksTests.sh` | PASS；共 6 个场景：3 个 validator fixture、注入 `stat` 失败、含空格路径的 Debug/Release 构建；两个配置均含逐字节相同的两张 PNG |
+| `Scripts/validate-control-assets.sh` | PASS；显式目录；`sips` PNG 格式检查并实际解码；有效、缺失、截断 PNG 3 个隔离 fixture 均符合预期且失败诊断唯一；截断 fixture 保留真实 PNG 前 64 bytes，`sips -g format` 仍报告 png、实际 decode gate 拒绝 |
+| `Tests/ScriptTests/BuildAppReleaseChecksTests.sh` | PASS；共 7 个场景：3 个 validator fixture、注入 `stat` 失败、含空格路径的 Debug/Release 构建、带换行文件名的额外 regular file 拒绝；两个配置的资源集合均精确为两张逐字节相同的 PNG |
 | `codesign --verify --deep --strict .build/app/GIFpro.app` | PASS（无诊断输出） |
 | `lipo -archs .build/app/GIFpro.app/Contents/MacOS/GIFpro` | `arm64` |
 | `du -sh .build/app/GIFpro.app` | `1.1M` |

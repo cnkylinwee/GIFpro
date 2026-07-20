@@ -34,6 +34,31 @@ assert_single_diagnostic() {
 assert_bundle_assets() {
     configuration="$1"
     bundled_resources="$project_root/.build/app/GIFpro.app/Contents/Resources"
+    resource_file_list="$fixture_resources/bundle-resource-files"
+    if ! find "$bundled_resources" -type f -print0 >"$resource_file_list"; then
+        echo "error: $configuration bundle resources could not be enumerated" >&2
+        exit 1
+    fi
+    regular_file_count=0
+    has_unexpected_regular_file=0
+    exec 4<"$resource_file_list"
+    while IFS= read -r -d '' _resource_file <&4; do
+        regular_file_count=$((regular_file_count + 1))
+        case "$_resource_file" in
+            "$bundled_resources/RecordButton.png"|"$bundled_resources/StopButton.png") ;;
+            *) has_unexpected_regular_file=1 ;;
+        esac
+    done
+    exec 4<&-
+    rm -f "$resource_file_list"
+    if [ "$regular_file_count" -ne 2 ]; then
+        echo "error: $configuration bundle resources must contain exactly 2 regular files; found $regular_file_count" >&2
+        exit 1
+    fi
+    if [ "$has_unexpected_regular_file" -ne 0 ]; then
+        echo "error: $configuration bundle resources contain an unexpected regular file" >&2
+        exit 1
+    fi
     for asset_name in RecordButton.png StopButton.png; do
         if [ ! -f "$bundled_resources/$asset_name" ]; then
             echo "error: $configuration bundle is missing $asset_name" >&2
@@ -63,7 +88,16 @@ if grep -Fq 'RecordButton.png' "$log_file"; then
 fi
 
 cp "$project_root/Resources/StopButton.png" "$fixture_resources/StopButton.png"
-printf 'not a png\n' >"$fixture_resources/RecordButton.png"
+dd if="$project_root/Resources/RecordButton.png" \
+    of="$fixture_resources/RecordButton.png" bs=64 count=1 2>/dev/null
+fixture_format="$(LC_ALL=C /usr/bin/sips --getProperty format \
+    "$fixture_resources/RecordButton.png" 2>/dev/null | awk '
+        $1 == "format:" { print $2 }
+    ')"
+if [ "$fixture_format" != "png" ]; then
+    echo "error: corrupt fixture did not reach the PNG decode gate" >&2
+    exit 1
+fi
 if "$project_root/Scripts/validate-control-assets.sh" "$fixture_resources" >"$log_file" 2>&1; then
     echo "error: validator accepted a corrupt RecordButton.png" >&2
     exit 1
@@ -103,6 +137,13 @@ fi
 
 "$linked_project/Scripts/build-app.sh" debug
 assert_bundle_assets debug
+unexpected_asset_name="$(printf 'Unexpected\nAsset')"
+: >"$project_root/.build/app/GIFpro.app/Contents/Resources/$unexpected_asset_name"
+if (assert_bundle_assets debug) >"$log_file" 2>&1; then
+    echo "error: debug bundle assertion accepted an unexpected regular file" >&2
+    exit 1
+fi
+assert_single_diagnostic "error: debug bundle resources must contain exactly 2 regular files; found 3"
 
 "$linked_project/Scripts/build-app.sh" release
 assert_bundle_assets release
