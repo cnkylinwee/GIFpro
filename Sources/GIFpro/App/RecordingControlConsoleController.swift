@@ -30,7 +30,8 @@ final class RecordingControlConsoleController {
                 self?.hide()
                 onRegion()
             },
-            onPreferences: onPreferences
+            onPreferences: onPreferences,
+            onClose: { [weak self] in self?.hide() }
         )
         let panel = RecordingControlConsolePanel(
             contentRect: frame,
@@ -100,15 +101,18 @@ final class RecordingControlConsoleView: NSView {
     private let onFullScreen: () -> Void
     private let onRegion: () -> Void
     private let onPreferences: () -> Void
+    private let onClose: () -> Void
 
     init(
         onFullScreen: @escaping () -> Void,
         onRegion: @escaping () -> Void,
-        onPreferences: @escaping () -> Void
+        onPreferences: @escaping () -> Void,
+        onClose: @escaping () -> Void
     ) {
         self.onFullScreen = onFullScreen
         self.onRegion = onRegion
         self.onPreferences = onPreferences
+        self.onClose = onClose
         super.init(frame: CGRect(origin: .zero, size: RecordingControlConsoleMetrics.size))
         configure()
     }
@@ -142,7 +146,7 @@ final class RecordingControlConsoleView: NSView {
             action: { [weak self] in self?.preferencesPressed() }
         )
 
-        let dragStrip = RecordingConsoleDragStripView()
+        let dragStrip = RecordingConsoleDragStripView(onClose: { [weak self] in self?.closePressed() })
         let optionStack = NSStackView(views: [fullScreen, region, preferences])
         optionStack.orientation = .horizontal
         optionStack.spacing = 1
@@ -169,6 +173,7 @@ final class RecordingControlConsoleView: NSView {
     private func fullScreenPressed() { onFullScreen() }
     private func regionPressed() { onRegion() }
     private func preferencesPressed() { onPreferences() }
+    private func closePressed() { onClose() }
 }
 
 @MainActor
@@ -279,11 +284,16 @@ private final class RecordingConsoleTileButton: NSControl {
 
 @MainActor
 private final class RecordingConsoleDragStripView: NSView {
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+    private let closeButton = RecordingConsoleCloseButton()
+    private let onClose: () -> Void
+
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
         toolTip = "拖动控制台"
+        configureCloseButton()
     }
 
     @available(*, unavailable)
@@ -291,5 +301,96 @@ private final class RecordingConsoleDragStripView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.performDrag(with: event)
+    }
+
+    private func configureCloseButton() {
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.onPress = onClose
+        addSubview(closeButton)
+        NSLayoutConstraint.activate([
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
+            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 18),
+            closeButton.heightAnchor.constraint(equalToConstant: 18),
+        ])
+    }
+}
+
+@MainActor
+private final class RecordingConsoleCloseButton: NSControl {
+    var onPress: (() -> Void)?
+    private let imageView = NSImageView()
+    private var isHovering = false { didSet { updateBackground() } }
+    private var isPressing = false { didSet { updateBackground() } }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(
+            NSTrackingArea(
+                rect: bounds,
+                options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+                owner: self,
+                userInfo: nil
+            )
+        )
+    }
+
+    override func mouseEntered(with event: NSEvent) { isHovering = true }
+    override func mouseExited(with event: NSEvent) { isHovering = false }
+    override func mouseDown(with event: NSEvent) { isPressing = true }
+
+    override func mouseUp(with event: NSEvent) {
+        let shouldFire = isPressing && bounds.contains(convert(event.locationInWindow, from: nil))
+        isPressing = false
+        if shouldFire { onPress?() }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onPress?()
+        return true
+    }
+
+    private func configure() {
+        wantsLayer = true
+        layer?.cornerRadius = 9
+        toolTip = "关闭控制台"
+        setAccessibilityIdentifier("gifpro.console.close")
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("关闭控制台")
+
+        imageView.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "关闭控制台")
+        imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .bold)
+        imageView.contentTintColor = .white.withAlphaComponent(0.9)
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(imageView)
+        NSLayoutConstraint.activate([
+            imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            imageView.widthAnchor.constraint(equalToConstant: 10),
+            imageView.heightAnchor.constraint(equalToConstant: 10),
+        ])
+        updateBackground()
+    }
+
+    private func updateBackground() {
+        let alpha: CGFloat
+        if isPressing {
+            alpha = 0.32
+        } else if isHovering {
+            alpha = 0.24
+        } else {
+            alpha = 0.14
+        }
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(alpha).cgColor
     }
 }

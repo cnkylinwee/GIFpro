@@ -517,30 +517,14 @@ final class SelectionOverlayController {
     private func moveSelection(displayID: CGDirectDisplayID, translation: CGPoint) {
         guard ownerDisplayID == displayID,
               let overlay = overlays[displayID],
-              let startRect = selectionMoveStartRect,
-              let startPanelFrame = selectionMoveStartPanelFrame,
-              let controlPanel else { return }
+              let startRect = selectionMoveStartRect else { return }
         let movedRect = SelectionGeometry.moved(
             startRect,
             translation: translation,
             within: overlay.view.bounds
         )
         selectionMoveLatestRect = movedRect
-        let actualTranslation = CGPoint(
-            x: movedRect.minX - startRect.minX,
-            y: movedRect.minY - startRect.minY
-        )
         overlay.view.selectionRect = movedRect
-        controlPanel.setFrame(
-            CGRect(
-                origin: CGPoint(
-                x: startPanelFrame.minX + actualTranslation.x,
-                y: startPanelFrame.minY + actualTranslation.y
-                ),
-                size: startPanelFrame.size
-            ),
-            display: false
-        )
     }
 
     private func endMovingSelection() {
@@ -548,6 +532,7 @@ final class SelectionOverlayController {
            let overlay = overlays[ownerDisplayID] {
             if let selectionMoveLatestRect {
                 overlay.view.selectionRect = selectionMoveLatestRect
+                presentControls(for: selectionMoveLatestRect, overlay: overlay)
             }
         }
         selectionMovePreviewPanel?.close()

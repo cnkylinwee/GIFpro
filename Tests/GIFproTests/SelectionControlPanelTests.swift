@@ -331,7 +331,7 @@ final class SelectionControlPanelTests: XCTestCase {
             .compactMap { $0 as? SelectionDragHandleView }
             .first)
         let view = try XCTUnwrap(controller.selectionOverlayViews[42])
-        let startSelection = try XCTUnwrap(view.selectionRect)
+        _ = try XCTUnwrap(view.selectionRect)
         let startPanelFrame = panel.frame
         let startPoint = CGPoint(x: 12, y: 12)
 
@@ -341,7 +341,7 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertNil(controller.selectionMovePanel)
         XCTAssertEqual(view.selectionRect, CGRect(x: 310, y: 290, width: 500, height: 300))
         XCTAssertFalse(view.hidesSelectionChrome)
-        XCTAssertEqual(panel.frame.origin, CGPoint(x: startPanelFrame.minX + 60, y: startPanelFrame.minY + 40))
+        XCTAssertEqual(panel.frame.origin, startPanelFrame.origin)
 
         handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: -10_000, y: -10_000)))
         XCTAssertEqual(view.selectionRect, CGRect(x: 0, y: 0, width: 500, height: 300))
@@ -352,10 +352,7 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertNil(controller.selectionMovePanel)
         XCTAssertEqual(
             panel.frame.origin,
-            CGPoint(
-                x: startPanelFrame.minX - startSelection.minX,
-                y: startPanelFrame.minY - startSelection.minY
-            )
+            CGPoint(x: 0, y: 312)
         )
     }
 

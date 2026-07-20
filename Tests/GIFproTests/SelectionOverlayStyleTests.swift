@@ -15,6 +15,7 @@ final class SelectionOverlayStyleTests: XCTestCase {
         XCTAssertEqual(SelectionOverlayStyle.handleHitSize, CGSize(width: 16, height: 16))
         XCTAssertEqual(SelectionOverlayStyle.handleCornerRadius, 2)
         XCTAssertEqual(SelectionOverlayStyle.selectionDashPattern, [NSNumber(value: 8), NSNumber(value: 6)])
+        XCTAssertEqual(SelectionOverlayStyle.borderResizeHitSlop, 5)
         XCTAssertEqual(selecting.borderRole, .selectionAccent)
         XCTAssertEqual(selecting.handleFillRole, .windowBackground)
         XCTAssertEqual(recording.borderRole, .recordingRed)
@@ -81,10 +82,12 @@ final class SelectionOverlayStyleTests: XCTestCase {
     func testFullBorderEdgesAreResizeTargets() {
         let style = SelectionOverlayStyle.selecting
 
-        XCTAssertEqual(style.hitHandle(at: CGPoint(x: 160, y: selection.maxY + 1), selection: selection), .top)
-        XCTAssertEqual(style.hitHandle(at: CGPoint(x: 240, y: selection.minY - 1), selection: selection), .bottom)
-        XCTAssertEqual(style.hitHandle(at: CGPoint(x: selection.minX - 1, y: 140), selection: selection), .left)
-        XCTAssertEqual(style.hitHandle(at: CGPoint(x: selection.maxX + 1, y: 180), selection: selection), .right)
+        XCTAssertEqual(style.hitHandle(at: CGPoint(x: 160, y: selection.maxY + 5), selection: selection), .top)
+        XCTAssertEqual(style.hitHandle(at: CGPoint(x: 240, y: selection.minY - 5), selection: selection), .bottom)
+        XCTAssertEqual(style.hitHandle(at: CGPoint(x: selection.minX - 5, y: 140), selection: selection), .left)
+        XCTAssertEqual(style.hitHandle(at: CGPoint(x: selection.maxX + 5, y: 180), selection: selection), .right)
+        XCTAssertNil(style.hitHandle(at: CGPoint(x: 160, y: selection.maxY + 5.5), selection: selection))
+        XCTAssertNil(style.hitHandle(at: CGPoint(x: selection.maxX + 5.5, y: 180), selection: selection))
     }
 
     func testSemanticRolesResolveAgainstLightAndDarkAppearances() throws {
@@ -130,13 +133,15 @@ final class SelectionOverlayStyleTests: XCTestCase {
             let visibleFrame = style.visibleHandleFrame(for: handle, selection: selection)
             try assertResize(handle: handle, mouseDownPoint: visibleFrame.center, translation: translation)
 
-            let hitFrame = style.handleHitFrame(for: handle, selection: selection)
-            let hitEdge = CGPoint(x: hitFrame.maxX - 0.5, y: hitFrame.midY)
-            try assertResize(handle: handle, mouseDownPoint: hitEdge, translation: translation)
+            try assertResize(
+                handle: handle,
+                mouseDownPoint: nearBorderPoint(for: handle, selection: selection),
+                translation: translation
+            )
         }
     }
 
-    func testDraggingInsideSelectionAwayFromHandlesCreatesNewSelection() throws {
+    func testDraggingInsideSelectionAwayFromBorderMovesExistingSelection() throws {
         let view = makeView()
         view.selectionRect = selection
         let start = CGPoint(x: selection.midX, y: selection.midY)
@@ -146,7 +151,7 @@ final class SelectionOverlayStyleTests: XCTestCase {
         view.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: end))
         view.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: end))
 
-        XCTAssertEqual(view.selectionRect, CGRect(x: start.x, y: start.y, width: 80, height: 70))
+        XCTAssertEqual(view.selectionRect, CGRect(x: 180, y: 150, width: 200, height: 160))
     }
 
     func testDraggingOutsideSelectionStillCreatesNewSelection() throws {
@@ -205,6 +210,20 @@ final class SelectionOverlayStyleTests: XCTestCase {
         let view = SelectionOverlayView(frame: CGRect(x: 0, y: 0, width: 500, height: 400))
         view.onDragBegan = { true }
         return view
+    }
+
+    private func nearBorderPoint(for handle: ResizeHandle, selection: CGRect) -> CGPoint {
+        let inset = SelectionOverlayStyle.borderResizeHitSlop - 0.5
+        return switch handle {
+        case .top: CGPoint(x: selection.midX, y: selection.maxY - inset)
+        case .bottom: CGPoint(x: selection.midX, y: selection.minY + inset)
+        case .left: CGPoint(x: selection.minX + inset, y: selection.midY)
+        case .right: CGPoint(x: selection.maxX - inset, y: selection.midY)
+        case .topLeft: CGPoint(x: selection.minX + inset, y: selection.maxY - inset)
+        case .topRight: CGPoint(x: selection.maxX - inset, y: selection.maxY - inset)
+        case .bottomLeft: CGPoint(x: selection.minX + inset, y: selection.minY + inset)
+        case .bottomRight: CGPoint(x: selection.maxX - inset, y: selection.minY + inset)
+        }
     }
 
     private func mouseEvent(type: NSEvent.EventType, location: CGPoint) throws -> NSEvent {

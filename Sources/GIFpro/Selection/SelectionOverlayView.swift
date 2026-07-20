@@ -47,6 +47,7 @@ struct SelectionOverlayStyle: Equatable {
     static let handleHitSize = CGSize(width: 16, height: 16)
     static let handleCornerRadius: CGFloat = 2
     static let selectionDashPattern: [NSNumber] = [8, 6]
+    static let borderResizeHitSlop: CGFloat = 5
 
     static let selecting = SelectionOverlayStyle(
         borderRole: .selectionAccent,
@@ -91,7 +92,7 @@ struct SelectionOverlayStyle: Equatable {
             return corner
         }
 
-        let edgeHitSlop = Self.handleHitSize.width / 2
+        let edgeHitSlop = Self.borderResizeHitSlop
         let horizontalRange = (selection.minX - edgeHitSlop)...(selection.maxX + edgeHitSlop)
         let verticalRange = (selection.minY - edgeHitSlop)...(selection.maxY + edgeHitSlop)
 
@@ -205,6 +206,8 @@ final class SelectionOverlayView: NSView {
     private var resizeHandle: ResizeHandle?
     private var resizeStartRect: CGRect?
     private var resizeStartPoint: CGPoint?
+    private var moveStartRect: CGRect?
+    private var moveStartPoint: CGPoint?
     private let notificationCenter: NotificationCenter
     private let onRedrawRequested: (() -> Void)?
 
@@ -256,6 +259,52 @@ final class SelectionOverlayView: NSView {
         requestRedraw()
     }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard isInteractive,
+              showsHandles,
+              !hidesSelectionChrome,
+              let selectionRect else { return }
+        let slop = SelectionOverlayStyle.borderResizeHitSlop
+        addCursorRect(selectionRect.insetBy(dx: slop, dy: slop), cursor: .openHand)
+        addCursorRect(
+            CGRect(
+                x: selectionRect.minX - slop,
+                y: selectionRect.maxY - slop,
+                width: selectionRect.width + slop * 2,
+                height: slop * 2
+            ),
+            cursor: .resizeUpDown
+        )
+        addCursorRect(
+            CGRect(
+                x: selectionRect.minX - slop,
+                y: selectionRect.minY - slop,
+                width: selectionRect.width + slop * 2,
+                height: slop * 2
+            ),
+            cursor: .resizeUpDown
+        )
+        addCursorRect(
+            CGRect(
+                x: selectionRect.minX - slop,
+                y: selectionRect.minY - slop,
+                width: slop * 2,
+                height: selectionRect.height + slop * 2
+            ),
+            cursor: .resizeLeftRight
+        )
+        addCursorRect(
+            CGRect(
+                x: selectionRect.maxX - slop,
+                y: selectionRect.minY - slop,
+                width: slop * 2,
+                height: selectionRect.height + slop * 2
+            ),
+            cursor: .resizeLeftRight
+        )
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard isInteractive else { return }
@@ -263,6 +312,12 @@ final class SelectionOverlayView: NSView {
             resizeHandle = handle
             resizeStartRect = selectionRect
             resizeStartPoint = point
+            return
+        }
+        if let selectionRect, selectionRect.contains(point) {
+            moveStartRect = selectionRect
+            moveStartPoint = point
+            NSCursor.closedHand.set()
             return
         }
         guard onDragBegan?() == true else { return }
@@ -283,6 +338,14 @@ final class SelectionOverlayView: NSView {
                 translation: translation,
                 within: bounds
             )
+        } else if let startRect = moveStartRect,
+                  let startPoint = moveStartPoint {
+            let translation = CGPoint(x: point.x - startPoint.x, y: point.y - startPoint.y)
+            selectionRect = SelectionGeometry.moved(
+                startRect,
+                translation: translation,
+                within: bounds
+            )
         } else if let dragAnchor {
             selectionRect = normalizedRect(from: dragAnchor, to: point)
         }
@@ -291,7 +354,8 @@ final class SelectionOverlayView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         guard isInteractive, var selectionRect else { return }
-        if resizeHandle == nil {
+        let didMoveExistingSelection = moveStartRect != nil
+        if resizeHandle == nil, !didMoveExistingSelection {
             selectionRect = enforceMinimumSize(selectionRect)
             self.selectionRect = selectionRect
         }
@@ -299,6 +363,9 @@ final class SelectionOverlayView: NSView {
         resizeHandle = nil
         resizeStartRect = nil
         resizeStartPoint = nil
+        moveStartRect = nil
+        moveStartPoint = nil
+        if didMoveExistingSelection { NSCursor.openHand.set() }
         onSelectionCompleted?(selectionRect)
     }
 
@@ -353,6 +420,7 @@ final class SelectionOverlayView: NSView {
     }
 
     private func updateSelectionLayers() {
+        discardCursorRects()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
