@@ -44,8 +44,8 @@ struct SelectionHandleRenderDescriptor: Equatable {
 struct SelectionOverlayStyle: Equatable {
     static let borderWidth: CGFloat = 2
     static let visibleHandleSize = CGSize(width: 10, height: 10)
-    static let handleHitSize = CGSize(width: 16, height: 16)
-    static let handleCornerRadius: CGFloat = 2
+    static let handleHitSize = CGSize(width: 22, height: 22)
+    static let handleCornerRadius: CGFloat = visibleHandleSize.width / 2
     static let selectionDashPattern: [NSNumber] = [8, 6]
     static let borderResizeHitSlop: CGFloat = 5
 
@@ -92,23 +92,8 @@ struct SelectionOverlayStyle: Equatable {
             return corner
         }
 
-        let edgeHitSlop = Self.borderResizeHitSlop
-        let horizontalRange = (selection.minX - edgeHitSlop)...(selection.maxX + edgeHitSlop)
-        let verticalRange = (selection.minY - edgeHitSlop)...(selection.maxY + edgeHitSlop)
-
-        if horizontalRange.contains(point.x), abs(point.y - selection.maxY) <= edgeHitSlop {
-            return .top
-        }
-        if horizontalRange.contains(point.x), abs(point.y - selection.minY) <= edgeHitSlop {
-            return .bottom
-        }
-        if verticalRange.contains(point.y), abs(point.x - selection.minX) <= edgeHitSlop {
-            return .left
-        }
-        if verticalRange.contains(point.y), abs(point.x - selection.maxX) <= edgeHitSlop {
-            return .right
-        }
-        return nil
+        let edgeHitTestOrder: [ResizeHandle] = [.top, .bottom, .left, .right]
+        return edgeHitTestOrder.first { handleHitFrame(for: $0, selection: selection).contains(point) }
     }
 
     private func center(for handle: ResizeHandle, selection: CGRect) -> CGPoint {
@@ -200,6 +185,7 @@ final class SelectionOverlayView: NSView {
     var isInteractive = true
 
     private let dimmingLayer = CAShapeLayer()
+    private let eventCaptureLayer = CAShapeLayer()
     private let borderLayer = CAShapeLayer()
     private var handleLayers: [ResizeHandle: CAShapeLayer] = [:]
     private var dragAnchor: CGPoint?
@@ -245,6 +231,11 @@ final class SelectionOverlayView: NSView {
 
     override var acceptsFirstResponder: Bool { isInteractive }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard isInteractive, bounds.contains(point) else { return nil }
+        return self
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
     }
@@ -265,44 +256,11 @@ final class SelectionOverlayView: NSView {
               showsHandles,
               !hidesSelectionChrome,
               let selectionRect else { return }
-        let slop = SelectionOverlayStyle.borderResizeHitSlop
-        addCursorRect(selectionRect.insetBy(dx: slop, dy: slop), cursor: .openHand)
-        addCursorRect(
-            CGRect(
-                x: selectionRect.minX - slop,
-                y: selectionRect.maxY - slop,
-                width: selectionRect.width + slop * 2,
-                height: slop * 2
-            ),
-            cursor: .resizeUpDown
-        )
-        addCursorRect(
-            CGRect(
-                x: selectionRect.minX - slop,
-                y: selectionRect.minY - slop,
-                width: selectionRect.width + slop * 2,
-                height: slop * 2
-            ),
-            cursor: .resizeUpDown
-        )
-        addCursorRect(
-            CGRect(
-                x: selectionRect.minX - slop,
-                y: selectionRect.minY - slop,
-                width: slop * 2,
-                height: selectionRect.height + slop * 2
-            ),
-            cursor: .resizeLeftRight
-        )
-        addCursorRect(
-            CGRect(
-                x: selectionRect.maxX - slop,
-                y: selectionRect.minY - slop,
-                width: slop * 2,
-                height: selectionRect.height + slop * 2
-            ),
-            cursor: .resizeLeftRight
-        )
+        addCursorRect(selectionRect, cursor: .openHand)
+        let style = SelectionOverlayStyle.selecting
+        for handle in ResizeHandle.allCases {
+            addCursorRect(style.handleHitFrame(for: handle, selection: selectionRect), cursor: cursor(for: handle))
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -397,6 +355,17 @@ final class SelectionOverlayView: NSView {
         SelectionOverlayStyle.selecting.hitHandle(at: point, selection: selection)
     }
 
+    private func cursor(for handle: ResizeHandle) -> NSCursor {
+        switch handle {
+        case .top, .bottom:
+            return .resizeUpDown
+        case .left, .right:
+            return .resizeLeftRight
+        case .topLeft, .topRight, .bottomLeft, .bottomRight:
+            return .crosshair
+        }
+    }
+
     private func configureLayerRendering() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
@@ -406,6 +375,9 @@ final class SelectionOverlayView: NSView {
         dimmingLayer.fillColor = NSColor.black.withAlphaComponent(0.35).cgColor
         layer?.addSublayer(dimmingLayer)
 
+        eventCaptureLayer.fillColor = NSColor.black.withAlphaComponent(0.01).cgColor
+        layer?.addSublayer(eventCaptureLayer)
+
         borderLayer.fillColor = NSColor.clear.cgColor
         borderLayer.lineWidth = SelectionOverlayStyle.borderWidth
         layer?.addSublayer(borderLayer)
@@ -413,6 +385,7 @@ final class SelectionOverlayView: NSView {
         for handle in ResizeHandle.allCases {
             let handleLayer = CAShapeLayer()
             handleLayer.lineWidth = SelectionOverlayStyle.borderWidth
+            handleLayer.fillColor = NSColor.clear.cgColor
             handleLayers[handle] = handleLayer
             layer?.addSublayer(handleLayer)
         }
@@ -427,7 +400,7 @@ final class SelectionOverlayView: NSView {
 
         let contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let rootBounds = bounds
-        [dimmingLayer, borderLayer].forEach {
+        [dimmingLayer, eventCaptureLayer, borderLayer].forEach {
             $0.frame = rootBounds
             $0.contentsScale = contentsScale
         }
@@ -450,11 +423,14 @@ final class SelectionOverlayView: NSView {
 
         guard let selectionRect else {
             borderLayer.isHidden = true
+            eventCaptureLayer.isHidden = true
             handleLayers.values.forEach { $0.isHidden = true }
             return
         }
 
         let style: SelectionOverlayStyle = showsHandles ? .selecting : .recording
+        eventCaptureLayer.isHidden = hidesSelectionChrome || !showsHandles
+        eventCaptureLayer.path = CGPath(rect: selectionRect, transform: nil)
         borderLayer.isHidden = hidesSelectionChrome
         borderLayer.strokeColor = style.borderRole.color(with: effectiveAppearance).cgColor
         borderLayer.lineDashPattern = showsHandles ? SelectionOverlayStyle.selectionDashPattern : nil
@@ -468,7 +444,13 @@ final class SelectionOverlayView: NSView {
 
         for handle in ResizeHandle.allCases {
             guard let handleLayer = handleLayers[handle] else { continue }
-            handleLayer.isHidden = true
+            handleLayer.isHidden = hidesSelectionChrome || !showsHandles
+            guard !handleLayer.isHidden else { continue }
+            let descriptor = style.handleRenderDescriptor(for: handle, selection: selectionRect)
+            handleLayer.strokeColor = style.borderRole.color(with: effectiveAppearance).cgColor
+            handleLayer.fillColor = style.handleFillRole.color(with: effectiveAppearance).cgColor
+            handleLayer.lineDashPattern = nil
+            handleLayer.path = CGPath(ellipseIn: descriptor.pathFrame, transform: nil)
         }
     }
 
