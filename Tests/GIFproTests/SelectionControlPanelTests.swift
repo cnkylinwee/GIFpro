@@ -92,7 +92,7 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertEqual(RecordingOverlayStatusContent.countdown(3), "3")
         XCTAssertEqual(
             RecordingOverlayStatusContent.recording(elapsed: 5, remaining: 10),
-            "00:05  剩余 00:10"
+            "00:05 / 00:10"
         )
         XCTAssertEqual(RecordingOverlayStatusContent.stopping, "正在完成…")
     }
@@ -165,14 +165,16 @@ final class SelectionControlPanelTests: XCTestCase {
         controller.showCountdown(value: 3, targetDisplayID: displayID)
         let countdown = controller.auxiliarySnapshot
         XCTAssertEqual(countdown.phase, .countdown)
-        XCTAssertTrue(countdown.hasStatusPanel)
+        XCTAssertFalse(countdown.hasStatusPanel)
+        XCTAssertEqual(view.countdownValue, 3)
         XCTAssertFalse(countdown.hasStopPanel)
 
         controller.startRecordingVisualState(onStop: {})
 
         XCTAssertEqual(controller.auxiliarySnapshot, countdown)
         XCTAssertEqual(controller.auxiliarySnapshot.phase, .countdown)
-        XCTAssertTrue(controller.auxiliarySnapshot.hasStatusPanel)
+        XCTAssertFalse(controller.auxiliarySnapshot.hasStatusPanel)
+        XCTAssertEqual(view.countdownValue, 3)
         XCTAssertFalse(controller.auxiliarySnapshot.hasStopPanel)
 
         rejectsRecordingInstallation = false
@@ -310,13 +312,14 @@ final class SelectionControlPanelTests: XCTestCase {
         handle.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: CGPoint(x: 34, y: 4)))
 
         XCTAssertEqual(handle.identifier?.rawValue, "gifpro.selection-drag-handle")
-        XCTAssertEqual(handle.toolTip, "拖动以移动录制范围")
+        XCTAssertEqual(handle.toolTip, "拖动以移动控制条")
+        XCTAssertEqual(handle.accessibilityLabel(), "移动控制条")
         XCTAssertEqual(beganCount, 1)
         XCTAssertEqual(translations, [CGPoint(x: 24, y: -8)])
         XCTAssertEqual(endedCount, 1)
     }
 
-    func testDraggingSelectionControlHandleMovesSelectionAndPanelWithinBounds() throws {
+    func testDraggingSelectionControlHandleMovesOnlyControlPanelWithinBounds() throws {
         let controller = SelectionOverlayController(
             imageLoader: StubTemplateControlImageLoader(),
             environment: makeEnvironment(),
@@ -331,29 +334,62 @@ final class SelectionControlPanelTests: XCTestCase {
             .compactMap { $0 as? SelectionDragHandleView }
             .first)
         let view = try XCTUnwrap(controller.selectionOverlayViews[42])
-        _ = try XCTUnwrap(view.selectionRect)
+        let initialSelection = try XCTUnwrap(view.selectionRect)
         let startPanelFrame = panel.frame
         let startPoint = CGPoint(x: 12, y: 12)
+
+        XCTAssertEqual(startPanelFrame.midX, 500)
+        XCTAssertEqual(startPanelFrame.minY, 200)
 
         handle.mouseDown(with: try mouseEvent(type: .leftMouseDown, location: startPoint))
         handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: 72, y: 52)))
 
         XCTAssertNil(controller.selectionMovePanel)
-        XCTAssertEqual(view.selectionRect, CGRect(x: 310, y: 290, width: 500, height: 300))
+        XCTAssertEqual(view.selectionRect, initialSelection)
         XCTAssertFalse(view.hidesSelectionChrome)
-        XCTAssertEqual(panel.frame.origin, startPanelFrame.origin)
+        XCTAssertEqual(panel.frame.origin, CGPoint(x: startPanelFrame.minX + 60, y: startPanelFrame.minY + 40))
 
         handle.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: CGPoint(x: -10_000, y: -10_000)))
-        XCTAssertEqual(view.selectionRect, CGRect(x: 0, y: 0, width: 500, height: 300))
+        XCTAssertEqual(view.selectionRect, initialSelection)
         handle.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: CGPoint(x: -10_000, y: -10_000)))
 
-        XCTAssertEqual(view.selectionRect, CGRect(x: 0, y: 0, width: 500, height: 300))
+        XCTAssertEqual(view.selectionRect, initialSelection)
         XCTAssertFalse(view.hidesSelectionChrome)
         XCTAssertNil(controller.selectionMovePanel)
         XCTAssertEqual(
             panel.frame.origin,
-            CGPoint(x: 0, y: 312)
+            CGPoint(x: 0, y: 0)
         )
+    }
+
+    func testSelectionOverlayPanelConsumesMouseAndInternalDragMovesSelection() throws {
+        let environment = makeEnvironment()
+        let controller = SelectionOverlayController(
+            imageLoader: StubTemplateControlImageLoader(),
+            environment: environment,
+            displayMonitor: StubSelectionOverlayDisplayMonitor()
+        )
+        controller.show()
+        defer { controller.dismiss() }
+
+        let overlayPanel = try XCTUnwrap(environment.selectionPanels.first)
+        let view = try XCTUnwrap(controller.selectionOverlayViews[42])
+        let selection = try XCTUnwrap(view.selectionRect)
+        let panel = try XCTUnwrap(controller.selectionControlPanel)
+        let startPanelFrame = panel.frame
+        let start = CGPoint(x: selection.midX, y: selection.midY)
+        let end = CGPoint(x: start.x + 40, y: start.y + 30)
+
+        XCTAssertFalse(overlayPanel.ignoresMouseEvents)
+        XCTAssertTrue(overlayPanel.acceptsMouseMovedEvents)
+        XCTAssertGreaterThan(overlayPanel.backgroundColor.alphaComponent, 0)
+
+        view.mouseDown(with: try mouseEvent(type: .leftMouseDown, location: start))
+        view.mouseDragged(with: try mouseEvent(type: .leftMouseDragged, location: end))
+        view.mouseUp(with: try mouseEvent(type: .leftMouseUp, location: end))
+
+        XCTAssertEqual(view.selectionRect, selection.offsetBy(dx: 40, dy: 30))
+        XCTAssertEqual(panel.frame.origin, startPanelFrame.origin)
     }
 
     func testControllerPassesItsInjectedLoaderToSelectionControls() throws {
@@ -392,8 +428,8 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertTrue(recordedRegions.isEmpty)
     }
 
-    func testRecordingVisualsPassThroughMouseExceptNarrowStopPanel() {
-        XCTAssertTrue(RecordingOverlayMousePolicy.selectionVisualsIgnoreMouseEvents)
+    func testRecordingVisualsBlockSelectionMouseWhileKeepingStopPanelInteractive() {
+        XCTAssertFalse(RecordingOverlayMousePolicy.selectionVisualsIgnoreMouseEvents)
         XCTAssertTrue(RecordingOverlayMousePolicy.statusTextIgnoresMouseEvents)
         XCTAssertFalse(RecordingOverlayMousePolicy.stopButtonIgnoresMouseEvents)
 
@@ -624,7 +660,8 @@ final class SelectionControlPanelTests: XCTestCase {
         XCTAssertEqual(controller.lifecycleSnapshot.phase, .countingDown)
         XCTAssertEqual(controller.lifecycleSnapshot.overlayDisplayIDs, [7])
         XCTAssertEqual(controller.selectionOverlayViews.keys.sorted(), [7])
-        XCTAssertTrue(controller.lifecycleSnapshot.hasStatusPanel)
+        XCTAssertFalse(controller.lifecycleSnapshot.hasStatusPanel)
+        XCTAssertEqual(ownerView.countdownValue, 3)
         XCTAssertFalse(controller.lifecycleSnapshot.hasStopPanel)
 
         var stopCount = 0
@@ -635,8 +672,8 @@ final class SelectionControlPanelTests: XCTestCase {
                 && !controller.auxiliarySnapshot.hasStopPanel
         }
         let stopPanel = try XCTUnwrap(environment.auxiliaryPanels.last)
-        let stopButton = try XCTUnwrap(stopPanel.contentView as? TemplateControlButton)
-        XCTAssertEqual(loader.loadedAssets, [.recordButton, .stopButton])
+        let stopButton = try XCTUnwrap(stopPanel.contentView as? RecordingStopButton)
+        XCTAssertEqual(loader.loadedAssets, [.recordButton])
         XCTAssertEqual(stopButton.title, "")
         XCTAssertEqual(stopButton.identifier?.rawValue, "gifpro.stop")
         XCTAssertEqual(stopButton.toolTip, "停止录制")
@@ -739,7 +776,7 @@ final class SelectionControlPanelTests: XCTestCase {
         first.controller.showCountdown(value: 3, targetDisplayID: 42)
         var newStopCount = 0
         first.controller.startRecordingVisualState { newStopCount += 1 }
-        let newButton = try XCTUnwrap(first.environment.auxiliaryPanels.last?.contentView as? TemplateControlButton)
+        let newButton = try XCTUnwrap(first.environment.auxiliaryPanels.last?.contentView as? RecordingStopButton)
         newButton.performClick(nil)
 
         XCTAssertEqual(oldStopCount, 0)
@@ -813,7 +850,7 @@ final class SelectionControlPanelTests: XCTestCase {
         controller: SelectionOverlayController,
         environment: StubSelectionOverlayEnvironment,
         monitor: StubSelectionOverlayDisplayMonitor,
-        stopButton: TemplateControlButton
+        stopButton: RecordingStopButton
     ) {
         let environment = StubSelectionOverlayEnvironment(displays: [
             .init(displayID: 42, frame: CGRect(x: 0, y: 0, width: 1_000, height: 800), visibleFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800), backingScaleFactor: 2),
@@ -835,12 +872,18 @@ final class SelectionControlPanelTests: XCTestCase {
         controller.startRecordingVisualState(onStop: onStop)
         let statusPanel = try XCTUnwrap(environment.auxiliaryPanels.dropLast().last)
         let stopPanel = try XCTUnwrap(environment.auxiliaryPanels.last)
-        let stopButton = try XCTUnwrap(stopPanel.contentView as? TemplateControlButton)
+        let stopButton = try XCTUnwrap(stopPanel.contentView as? RecordingStopButton)
 
         XCTAssertEqual(controller.lifecycleSnapshot.phase, .recording)
         XCTAssertEqual(controller.lifecycleSnapshot.overlayDisplayIDs, [42])
         XCTAssertEqual(controller.selectionOverlayViews.keys.sorted(), [42])
-        XCTAssertTrue(environment.selectionPanels[0].ignoresMouseEvents)
+        XCTAssertFalse(environment.selectionPanels[0].ignoresMouseEvents)
+        XCTAssertTrue(view.blocksSelectionMouseEvents)
+        let recordingSelection = try XCTUnwrap(view.selectionRect)
+        XCTAssertEqual(recordingSelection.size, selection.size)
+        XCTAssertEqual(view.bounds.size, CGSize(width: selection.width + 6, height: selection.height + 6))
+        XCTAssertTrue(view.hitTest(CGPoint(x: recordingSelection.midX, y: recordingSelection.midY)) === view)
+        XCTAssertNil(view.hitTest(CGPoint(x: recordingSelection.minX - 2, y: recordingSelection.midY)))
         XCTAssertTrue(statusPanel.ignoresMouseEvents)
         XCTAssertFalse(stopPanel.ignoresMouseEvents)
         XCTAssertTrue(controller.lifecycleSnapshot.hasStatusPanel)

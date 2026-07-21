@@ -9,6 +9,7 @@ final class SelectionOverlayStyleTests: XCTestCase {
     func testSelectingAndRecordingStylesStoreFixedMetricsAndSemanticRoles() {
         let selecting = SelectionOverlayStyle.selecting
         let recording = SelectionOverlayStyle.recording
+        let countdown = SelectionOverlayStyle.countdown
 
         XCTAssertEqual(SelectionOverlayStyle.borderWidth, 2)
         XCTAssertEqual(SelectionOverlayStyle.visibleHandleSize, CGSize(width: 10, height: 10))
@@ -16,11 +17,18 @@ final class SelectionOverlayStyleTests: XCTestCase {
         XCTAssertEqual(SelectionOverlayStyle.handleCornerRadius, 5)
         XCTAssertEqual(SelectionOverlayStyle.selectionDashPattern, [NSNumber(value: 8), NSNumber(value: 6)])
         XCTAssertEqual(SelectionOverlayStyle.borderResizeHitSlop, 5)
+        XCTAssertEqual(SelectionOverlayStyle.countdownCornerLength, 16)
+        XCTAssertEqual(SelectionOverlayStyle.countdownCornerWidth, 3)
+        XCTAssertEqual(SelectionOverlayStyle.countdownDiskSize, CGSize(width: 96, height: 96))
+        XCTAssertEqual(SelectionOverlayStyle.countdownFontSize, 72)
         XCTAssertEqual(selecting.borderRole, .selectionAccent)
         XCTAssertEqual(selecting.handleFillRole, .windowBackground)
         XCTAssertEqual(recording.borderRole, .recordingRed)
         XCTAssertEqual(recording.handleFillRole, .windowBackground)
+        XCTAssertEqual(countdown.borderRole, .countdownOrangeRed)
+        XCTAssertEqual(countdown.handleFillRole, .windowBackground)
         XCTAssertNotEqual(selecting, recording)
+        XCTAssertNotEqual(countdown, recording)
         XCTAssertEqual(selecting, .selecting)
     }
 
@@ -107,6 +115,10 @@ final class SelectionOverlayStyleTests: XCTestCase {
                 SelectionOverlayColorRole.windowBackground.color(with: appearance),
                 color(.windowBackgroundColor, with: appearance)
             )
+            assertColor(
+                SelectionOverlayColorRole.countdownOrangeRed.color(with: appearance),
+                equals: NSColor(calibratedRed: 1, green: 0.28, blue: 0.16, alpha: 1)
+            )
         }
     }
 
@@ -167,6 +179,7 @@ final class SelectionOverlayStyleTests: XCTestCase {
 
         XCTAssertTrue(view.hitTest(CGPoint(x: selection.midX, y: selection.midY)) === view)
         XCTAssertTrue(view.hitTest(CGPoint(x: selection.minX + 1, y: selection.maxY - 1)) === view)
+        XCTAssertTrue(view.acceptsFirstMouse(for: nil))
     }
 
     func testNonInteractiveOverlayDoesNotConsumeMouseEvents() {
@@ -175,6 +188,18 @@ final class SelectionOverlayStyleTests: XCTestCase {
         view.isInteractive = false
 
         XCTAssertNil(view.hitTest(CGPoint(x: selection.midX, y: selection.midY)))
+        XCTAssertFalse(view.acceptsFirstMouse(for: nil))
+    }
+
+    func testRecordingOverlayConsumesOnlySelectionRectWhenBlockingMouseEvents() {
+        let view = makeView()
+        view.selectionRect = selection
+        view.isInteractive = false
+        view.blocksSelectionMouseEvents = true
+
+        XCTAssertTrue(view.acceptsFirstMouse(for: nil))
+        XCTAssertTrue(view.hitTest(CGPoint(x: selection.midX, y: selection.midY)) === view)
+        XCTAssertNil(view.hitTest(CGPoint(x: selection.minX - 20, y: selection.midY)))
     }
 
     func testDraggingOutsideSelectionStillCreatesNewSelection() throws {
@@ -257,6 +282,23 @@ final class SelectionOverlayStyleTests: XCTestCase {
             color = semanticColor()
         }
         return color ?? semanticColor()
+    }
+
+    private func assertColor(
+        _ actual: NSColor,
+        equals expected: NSColor,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let actualRGB = actual.usingColorSpace(.deviceRGB),
+              let expectedRGB = expected.usingColorSpace(.deviceRGB) else {
+            XCTFail("Colors must convert to device RGB", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(actualRGB.redComponent, expectedRGB.redComponent, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(actualRGB.greenComponent, expectedRGB.greenComponent, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(actualRGB.blueComponent, expectedRGB.blueComponent, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(actualRGB.alphaComponent, expectedRGB.alphaComponent, accuracy: 0.001, file: file, line: line)
     }
 }
 

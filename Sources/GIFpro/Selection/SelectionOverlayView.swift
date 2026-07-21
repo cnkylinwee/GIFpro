@@ -2,7 +2,7 @@ import AppKit
 import QuartzCore
 
 enum RecordingOverlayMousePolicy {
-    static let selectionVisualsIgnoreMouseEvents = true
+    static let selectionVisualsIgnoreMouseEvents = false
     static let statusTextIgnoresMouseEvents = true
     static let stopButtonIgnoresMouseEvents = false
 }
@@ -10,6 +10,7 @@ enum RecordingOverlayMousePolicy {
 enum SelectionOverlayColorRole: Equatable {
     case selectionAccent
     case recordingRed
+    case countdownOrangeRed
     case windowBackground
 
     func color(with appearance: NSAppearance? = nil) -> NSColor {
@@ -17,6 +18,7 @@ enum SelectionOverlayColorRole: Equatable {
             switch self {
             case .selectionAccent: NSColor.controlAccentColor
             case .recordingRed: NSColor.systemRed
+            case .countdownOrangeRed: NSColor(calibratedRed: 1, green: 0.28, blue: 0.16, alpha: 1)
             case .windowBackground: NSColor.windowBackgroundColor
             }
         }
@@ -48,6 +50,10 @@ struct SelectionOverlayStyle: Equatable {
     static let handleCornerRadius: CGFloat = visibleHandleSize.width / 2
     static let selectionDashPattern: [NSNumber] = [8, 6]
     static let borderResizeHitSlop: CGFloat = 5
+    static let countdownCornerLength: CGFloat = 16
+    static let countdownCornerWidth: CGFloat = 3
+    static let countdownDiskSize = CGSize(width: 96, height: 96)
+    static let countdownFontSize: CGFloat = 72
 
     static let selecting = SelectionOverlayStyle(
         borderRole: .selectionAccent,
@@ -55,6 +61,10 @@ struct SelectionOverlayStyle: Equatable {
     )
     static let recording = SelectionOverlayStyle(
         borderRole: .recordingRed,
+        handleFillRole: .windowBackground
+    )
+    static let countdown = SelectionOverlayStyle(
+        borderRole: .countdownOrangeRed,
         handleFillRole: .windowBackground
     )
 
@@ -183,10 +193,19 @@ final class SelectionOverlayView: NSView {
         didSet { updateSelectionLayers() }
     }
     var isInteractive = true
+    var blocksSelectionMouseEvents = false {
+        didSet { updateSelectionLayers() }
+    }
+    var countdownValue: Int? {
+        didSet { updateSelectionLayers() }
+    }
 
     private let dimmingLayer = CAShapeLayer()
     private let eventCaptureLayer = CAShapeLayer()
     private let borderLayer = CAShapeLayer()
+    private let countdownCornerLayer = CAShapeLayer()
+    private let countdownDiskLayer = CAShapeLayer()
+    private let countdownTextLayer = CATextLayer()
     private var handleLayers: [ResizeHandle: CAShapeLayer] = [:]
     private var dragAnchor: CGPoint?
     private var resizeHandle: ResizeHandle?
@@ -231,9 +250,19 @@ final class SelectionOverlayView: NSView {
 
     override var acceptsFirstResponder: Bool { isInteractive }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        isInteractive || blocksSelectionMouseEvents
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard isInteractive, bounds.contains(point) else { return nil }
-        return self
+        guard bounds.contains(point) else { return nil }
+        if isInteractive { return self }
+        if blocksSelectionMouseEvents,
+           let selectionRect,
+           selectionRect.contains(point) {
+            return self
+        }
+        return nil
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -382,6 +411,25 @@ final class SelectionOverlayView: NSView {
         borderLayer.lineWidth = SelectionOverlayStyle.borderWidth
         layer?.addSublayer(borderLayer)
 
+        countdownCornerLayer.fillColor = NSColor.clear.cgColor
+        countdownCornerLayer.lineWidth = SelectionOverlayStyle.countdownCornerWidth
+        countdownCornerLayer.lineCap = .square
+        countdownCornerLayer.lineJoin = .miter
+        layer?.addSublayer(countdownCornerLayer)
+
+        countdownDiskLayer.fillColor = NSColor.black.withAlphaComponent(0.46).cgColor
+        countdownDiskLayer.strokeColor = NSColor.white.withAlphaComponent(0.32).cgColor
+        countdownDiskLayer.lineWidth = 1
+        layer?.addSublayer(countdownDiskLayer)
+
+        countdownTextLayer.alignmentMode = .center
+        countdownTextLayer.foregroundColor = NSColor.white.cgColor
+        countdownTextLayer.shadowColor = NSColor.black.cgColor
+        countdownTextLayer.shadowOpacity = 0.28
+        countdownTextLayer.shadowRadius = 8
+        countdownTextLayer.shadowOffset = CGSize(width: 0, height: -2)
+        layer?.addSublayer(countdownTextLayer)
+
         for handle in ResizeHandle.allCases {
             let handleLayer = CAShapeLayer()
             handleLayer.lineWidth = SelectionOverlayStyle.borderWidth
@@ -400,7 +448,7 @@ final class SelectionOverlayView: NSView {
 
         let contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let rootBounds = bounds
-        [dimmingLayer, eventCaptureLayer, borderLayer].forEach {
+        [dimmingLayer, eventCaptureLayer, borderLayer, countdownCornerLayer, countdownDiskLayer, countdownTextLayer].forEach {
             $0.frame = rootBounds
             $0.contentsScale = contentsScale
         }
@@ -424,16 +472,18 @@ final class SelectionOverlayView: NSView {
         guard let selectionRect else {
             borderLayer.isHidden = true
             eventCaptureLayer.isHidden = true
+            hideCountdownLayers()
             handleLayers.values.forEach { $0.isHidden = true }
             return
         }
 
-        let style: SelectionOverlayStyle = showsHandles ? .selecting : .recording
-        eventCaptureLayer.isHidden = hidesSelectionChrome || !showsHandles
+        let isCountingDown = countdownValue != nil
+        let style: SelectionOverlayStyle = isCountingDown ? .countdown : (showsHandles ? .selecting : .recording)
+        eventCaptureLayer.isHidden = hidesSelectionChrome || (!showsHandles && !blocksSelectionMouseEvents)
         eventCaptureLayer.path = CGPath(rect: selectionRect, transform: nil)
         borderLayer.isHidden = hidesSelectionChrome
         borderLayer.strokeColor = style.borderRole.color(with: effectiveAppearance).cgColor
-        borderLayer.lineDashPattern = showsHandles ? SelectionOverlayStyle.selectionDashPattern : nil
+        borderLayer.lineDashPattern = (showsHandles || isCountingDown) ? SelectionOverlayStyle.selectionDashPattern : nil
         borderLayer.path = CGPath(
             rect: selectionRect.insetBy(
                 dx: SelectionOverlayStyle.borderWidth / 2,
@@ -441,6 +491,7 @@ final class SelectionOverlayView: NSView {
             ),
             transform: nil
         )
+        updateCountdownLayers(selectionRect: selectionRect, style: style)
 
         for handle in ResizeHandle.allCases {
             guard let handleLayer = handleLayers[handle] else { continue }
@@ -452,6 +503,94 @@ final class SelectionOverlayView: NSView {
             handleLayer.lineDashPattern = nil
             handleLayer.path = CGPath(ellipseIn: descriptor.pathFrame, transform: nil)
         }
+    }
+
+    private func updateCountdownLayers(selectionRect: CGRect, style: SelectionOverlayStyle) {
+        guard let countdownValue, !hidesSelectionChrome else {
+            hideCountdownLayers()
+            borderLayer.removeAnimation(forKey: "gifpro.countdown.border.pulse")
+            countdownCornerLayer.removeAnimation(forKey: "gifpro.countdown.corner.pulse")
+            return
+        }
+
+        let accent = style.borderRole.color(with: effectiveAppearance)
+        countdownCornerLayer.isHidden = false
+        countdownCornerLayer.strokeColor = accent.cgColor
+        countdownCornerLayer.path = countdownCornerPath(for: selectionRect)
+
+        let diskSize = min(
+            SelectionOverlayStyle.countdownDiskSize.width,
+            max(56, min(selectionRect.width, selectionRect.height) * 0.45)
+        )
+        let diskFrame = CGRect(
+            x: selectionRect.midX - diskSize / 2,
+            y: selectionRect.midY - diskSize / 2,
+            width: diskSize,
+            height: diskSize
+        )
+        countdownDiskLayer.isHidden = false
+        countdownDiskLayer.path = CGPath(ellipseIn: diskFrame, transform: nil)
+
+        let fontSize = min(SelectionOverlayStyle.countdownFontSize, diskSize * 0.75)
+        countdownTextLayer.isHidden = false
+        countdownTextLayer.string = "\(countdownValue)"
+        countdownTextLayer.font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .heavy)
+        countdownTextLayer.fontSize = fontSize
+        countdownTextLayer.frame = CGRect(
+            x: diskFrame.minX,
+            y: diskFrame.midY - fontSize * 0.58,
+            width: diskFrame.width,
+            height: fontSize * 1.2
+        )
+
+        installCountdownPulseIfNeeded(on: borderLayer, key: "gifpro.countdown.border.pulse")
+        installCountdownPulseIfNeeded(on: countdownCornerLayer, key: "gifpro.countdown.corner.pulse")
+    }
+
+    private func hideCountdownLayers() {
+        countdownCornerLayer.isHidden = true
+        countdownDiskLayer.isHidden = true
+        countdownTextLayer.isHidden = true
+    }
+
+    private func countdownCornerPath(for selectionRect: CGRect) -> CGPath {
+        let inset = SelectionOverlayStyle.countdownCornerWidth / 2
+        let rect = selectionRect.insetBy(dx: inset, dy: inset)
+        let length = min(
+            SelectionOverlayStyle.countdownCornerLength,
+            max(8, min(rect.width, rect.height) / 4)
+        )
+        let path = CGMutablePath()
+
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY - length))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX + length, y: rect.maxY))
+
+        path.move(to: CGPoint(x: rect.maxX - length, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - length))
+
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY + length))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + length, y: rect.minY))
+
+        path.move(to: CGPoint(x: rect.maxX - length, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + length))
+
+        return path
+    }
+
+    private func installCountdownPulseIfNeeded(on layer: CALayer, key: String) {
+        guard layer.animation(forKey: key) == nil else { return }
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = 0.62
+        animation.toValue = 1.0
+        animation.duration = 0.72
+        animation.autoreverses = true
+        animation.repeatCount = .infinity
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(animation, forKey: key)
     }
 
     private func observeSystemColorChanges() {
@@ -470,6 +609,122 @@ final class SelectionOverlayView: NSView {
     private func requestRedraw() {
         updateSelectionLayers()
         onRedrawRequested?()
+    }
+}
+
+@MainActor
+final class RecordingStatusPillView: NSView {
+    private let dotLayer = CAShapeLayer()
+    private let textField = NSTextField(labelWithString: "")
+    private var isWarning = false
+
+    init(text: String, isWarning: Bool) {
+        self.isWarning = isWarning
+        super.init(frame: .zero)
+        configure(text: text)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+        dotLayer.frame = CGRect(x: 13, y: bounds.midY - 4, width: 8, height: 8)
+        dotLayer.path = CGPath(ellipseIn: dotLayer.bounds, transform: nil)
+    }
+
+    func update(text: String, isWarning: Bool) {
+        self.isWarning = isWarning
+        textField.stringValue = text
+        textField.textColor = isWarning ? .systemYellow : .white
+        dotLayer.fillColor = (isWarning ? NSColor.systemYellow : NSColor.systemRed).cgColor
+    }
+
+    private func configure(text: String) {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.74).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0.22
+        layer?.shadowRadius = 10
+        layer?.shadowOffset = CGSize(width: 0, height: -2)
+
+        dotLayer.fillColor = NSColor.systemRed.cgColor
+        layer?.addSublayer(dotLayer)
+
+        textField.alignment = .center
+        textField.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        textField.textColor = .white
+        textField.lineBreakMode = .byClipping
+        textField.setContentCompressionResistancePriority(.required, for: .horizontal)
+        textField.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(textField)
+        NSLayoutConstraint.activate([
+            textField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 26),
+            textField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            textField.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        update(text: text, isWarning: isWarning)
+    }
+}
+
+@MainActor
+final class RecordingStopButton: NSButton {
+    private var isPressed = false {
+        didSet { needsDisplay = true }
+    }
+
+    init() {
+        super.init(frame: .zero)
+        configure()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: NSSize { RecordingOverlayPresentation.stopSize }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let inset: CGFloat = isPressed ? 3 : 2
+        let circleRect = bounds.insetBy(dx: inset, dy: inset)
+        let background = isEnabled
+            ? NSColor.systemRed.withAlphaComponent(isPressed ? 0.82 : 0.96)
+            : NSColor.disabledControlTextColor.withAlphaComponent(0.44)
+        background.setFill()
+        NSBezierPath(ovalIn: circleRect).fill()
+
+        NSColor.white.withAlphaComponent(isEnabled ? 0.96 : 0.62).setFill()
+        let squareSize: CGFloat = 13
+        let squareRect = CGRect(
+            x: bounds.midX - squareSize / 2,
+            y: bounds.midY - squareSize / 2,
+            width: squareSize,
+            height: squareSize
+        )
+        NSBezierPath(roundedRect: squareRect, xRadius: 3, yRadius: 3).fill()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isPressed = true
+        super.mouseDown(with: event)
+        isPressed = false
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    private func configure() {
+        title = ""
+        isBordered = false
+        setButtonType(.momentaryChange)
+        bezelStyle = .regularSquare
+        focusRingType = .none
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: RecordingOverlayPresentation.stopSize.width).isActive = true
+        heightAnchor.constraint(equalToConstant: RecordingOverlayPresentation.stopSize.height).isActive = true
     }
 }
 
@@ -615,6 +870,13 @@ final class SelectionDragHandleView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard onMoveBegan?() == true else { return }
+        if let window, event.windowNumber == window.windowNumber {
+            NSCursor.closedHand.set()
+            window.performDrag(with: event)
+            NSCursor.openHand.set()
+            onMoveEnded?()
+            return
+        }
         dragStartPoint = event.locationInWindow
         NSCursor.closedHand.set()
     }
@@ -638,9 +900,9 @@ final class SelectionDragHandleView: NSView {
 
     private func commonInit() {
         identifier = NSUserInterfaceItemIdentifier("gifpro.selection-drag-handle")
-        toolTip = "拖动以移动录制范围"
+        toolTip = "拖动以移动控制条"
         setAccessibilityElement(true)
         setAccessibilityRole(.handle)
-        setAccessibilityLabel("移动录制范围")
+        setAccessibilityLabel("移动控制条")
     }
 }

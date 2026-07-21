@@ -6,7 +6,7 @@ enum RecordingOverlayStatusContent {
 
     static func recording(elapsed: TimeInterval, remaining: TimeInterval) -> String {
         String(
-            format: "%02d:%02d  剩余 %02d:%02d",
+            format: "%02d:%02d / %02d:%02d",
             Int(elapsed) / 60,
             Int(elapsed) % 60,
             Int(remaining) / 60,
@@ -179,7 +179,7 @@ final class SelectionOverlayController {
         displayMonitor.stop()
         controlPanel?.close()
         controlPanel = nil
-        endMovingSelection()
+        endMovingControlPanel()
         statusPanel?.close()
         statusPanel = nil
         stopPanel?.close()
@@ -187,6 +187,7 @@ final class SelectionOverlayController {
         stopActionTarget = nil
         lifecycle.hide()
         for overlay in overlays.values {
+            overlay.view.countdownValue = nil
             overlay.panel.onEscape = nil
             overlay.panel.close()
         }
@@ -199,21 +200,16 @@ final class SelectionOverlayController {
               let overlay = validOwnerOverlay(targetDisplayID: targetDisplayID) else { return }
         var proposedLifecycle = lifecycle
         proposedLifecycle.beginCountdown()
-        guard installStatusPanels(
-            phase: .countdown,
-            overlay: overlay,
-            text: RecordingOverlayStatusContent.countdown(value),
-            onStop: nil
-        ) else { return }
-        proposedLifecycle.setAuxiliaryPanels(status: statusPanel != nil, stop: false)
-        lifecycle = proposedLifecycle
         configureStatusOnlyVisualState()
+        overlay.view.countdownValue = value
+        proposedLifecycle.setAuxiliaryPanels(status: false, stop: false)
+        lifecycle = proposedLifecycle
     }
 
     func updateCountdown(_ value: Int) {
         guard lifecycle.snapshot.phase == .countingDown,
-              statusPanel != nil else { return }
-        updateStatusPanel(text: RecordingOverlayStatusContent.countdown(value))
+              let overlay = validOwnerOverlay() else { return }
+        overlay.view.countdownValue = value
     }
 
     func startRecordingVisualState(onStop: @escaping () -> Void) {
@@ -229,6 +225,7 @@ final class SelectionOverlayController {
             onStop: onStop,
             generation: proposedLifecycle.snapshot.generation
         ) else { return }
+        overlay.view.countdownValue = nil
         proposedLifecycle.setAuxiliaryPanels(status: statusPanel != nil, stop: stopPanel != nil)
         lifecycle = proposedLifecycle
         configureStatusOnlyVisualState()
@@ -256,6 +253,9 @@ final class SelectionOverlayController {
         if statusPanel != nil {
             updateStatusPanel(text: RecordingOverlayStatusContent.stopping)
         }
+        if let ownerDisplayID, let overlay = overlays[ownerDisplayID] {
+            overlay.view.countdownValue = nil
+        }
     }
 
     private func configureStatusOnlyVisualState() {
@@ -268,15 +268,32 @@ final class SelectionOverlayController {
                 closedDisplayIDs.append(displayID)
                 continue
             }
+            constrainOverlayPanelToSelectionRegion(overlay)
             overlay.view.showsDimming = false
             overlay.view.showsHandles = false
             overlay.view.isInteractive = false
+            overlay.view.blocksSelectionMouseEvents = true
             overlay.panel.handlesEscape = false
             overlay.panel.onEscape = nil
             overlay.panel.ignoresMouseEvents = RecordingOverlayMousePolicy.selectionVisualsIgnoreMouseEvents
             overlay.panel.resignKey()
         }
         for displayID in closedDisplayIDs { overlays.removeValue(forKey: displayID) }
+    }
+
+    private func constrainOverlayPanelToSelectionRegion(_ overlay: Overlay) {
+        guard let selectionRect = overlay.view.selectionRect else { return }
+        let padding = SelectionOverlayStyle.borderWidth + 1
+        let globalSelectionRect = overlay.panel.convertToScreen(selectionRect)
+        let panelFrame = globalSelectionRect.insetBy(dx: -padding, dy: -padding)
+        overlay.panel.setFrame(panelFrame, display: false)
+        overlay.view.frame = CGRect(origin: .zero, size: panelFrame.size)
+        overlay.view.selectionRect = CGRect(
+            x: padding,
+            y: padding,
+            width: selectionRect.width,
+            height: selectionRect.height
+        )
     }
 
     private func handleDisplayConfigurationChange(_ change: DisplayConfigurationChange) {
@@ -309,13 +326,8 @@ final class SelectionOverlayController {
         )
         var proposedStatusPanel: NSPanel?
         if let statusFrame = layout.statusFrame {
-            let label = NSTextField(labelWithString: text)
-            label.alignment = .center
-            label.textColor = .white
-            label.backgroundColor = NSColor.black.withAlphaComponent(0.78)
-            label.drawsBackground = true
-            label.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
-            let status = makeAuxiliaryPanel(frame: statusFrame, contentView: label)
+            let statusView = RecordingStatusPillView(text: text, isWarning: false)
+            let status = makeAuxiliaryPanel(frame: statusFrame, contentView: statusView)
             status.ignoresMouseEvents = RecordingOverlayMousePolicy.statusTextIgnoresMouseEvents
             proposedStatusPanel = status
         }
@@ -324,10 +336,7 @@ final class SelectionOverlayController {
         var proposedTarget: OneShotActionTarget?
         if let stopFrame = layout.stopFrame {
             guard let onStop, let generation else { return false }
-            let button = TemplateControlButton(
-                image: imageLoader.load(.stopButton).image,
-                semanticTint: .destructive
-            )
+            let button = RecordingStopButton()
             button.identifier = NSUserInterfaceItemIdentifier("gifpro.stop")
             button.toolTip = "停止录制"
             button.setAccessibilityIdentifier("gifpro.stop")
@@ -367,9 +376,8 @@ final class SelectionOverlayController {
     }
 
     private func updateStatusPanel(text: String, isWarning: Bool = false) {
-        guard let label = statusPanel?.contentView as? NSTextField else { return }
-        label.stringValue = text
-        label.textColor = isWarning ? .systemYellow : .white
+        guard let statusView = statusPanel?.contentView as? RecordingStatusPillView else { return }
+        statusView.update(text: text, isWarning: isWarning)
     }
 
     private func makeAuxiliaryPanel(frame: CGRect, contentView: NSView) -> NSPanel {
@@ -378,6 +386,7 @@ final class SelectionOverlayController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
+        panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.setFrame(frame, display: false)
         contentView.frame = CGRect(origin: .zero, size: frame.size)
@@ -402,9 +411,11 @@ final class SelectionOverlayController {
         let panel = environment.makeSelectionPanel(for: display)
         panel.level = .screenSaver
         panel.isOpaque = false
-        panel.backgroundColor = .clear
+        panel.backgroundColor = NSColor.black.withAlphaComponent(0.01)
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
+        panel.ignoresMouseEvents = false
+        panel.acceptsMouseMovedEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.onEscape = { [weak self] in self?.cancelSelection() }
 
@@ -437,11 +448,7 @@ final class SelectionOverlayController {
     }
 
     private func presentControls(for localRect: CGRect, overlay: Overlay) {
-        if let controlPanel {
-            controlPanel.setFrame(
-                controlPanelFrame(for: localRect, overlay: overlay, panelSize: controlPanel.frame.size),
-                display: false
-            )
+        if controlPanel != nil {
             lifecycle.setControlPanel(true)
             return
         }
@@ -461,16 +468,16 @@ final class SelectionOverlayController {
         }
         controls.onRecord = { [weak self] in self?.recordSelection() }
         controls.onCancel = { [weak self] in self?.cancelSelection() }
-        controls.onMoveBegan = { [weak self] in self?.beginMovingSelection(displayID: overlay.display.displayID) ?? false }
+        controls.onMoveBegan = { [weak self] in self?.beginMovingControlPanel(displayID: overlay.display.displayID) ?? false }
         controls.onMoveChanged = { [weak self] translation in
-            self?.moveSelection(displayID: overlay.display.displayID, translation: translation)
+            self?.moveControlPanel(displayID: overlay.display.displayID, translation: translation)
         }
-        controls.onMoveEnded = { [weak self] in self?.endMovingSelection() }
+        controls.onMoveEnded = { [weak self] in self?.endMovingControlPanel() }
 
         let size = controls.fittingSize
         let panelSize = CGSize(width: max(size.width, 500), height: max(size.height, 52))
         let panel = SelectionControlPanel(
-            contentRect: controlPanelFrame(for: localRect, overlay: overlay, panelSize: panelSize),
+            contentRect: defaultControlPanelFrame(for: overlay, panelSize: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -479,8 +486,9 @@ final class SelectionOverlayController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
+        panel.animationBehavior = .none
         panel.contentView = controls
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.onCancel = { [weak self] in self?.cancelSelection() }
         panel.orderFrontRegardless()
         panel.makeKey()
@@ -488,53 +496,58 @@ final class SelectionOverlayController {
         lifecycle.setControlPanel(true)
     }
 
-    private func controlPanelFrame(for localRect: CGRect, overlay: Overlay, panelSize: CGSize) -> CGRect {
-        let globalRect = overlay.panel.convertToScreen(localRect)
-        let screenFrame = overlay.display.frame
-        let proposedY = globalRect.minY - panelSize.height - 12
-        let y = proposedY >= screenFrame.minY
-            ? proposedY
-            : min(globalRect.maxY + 12, screenFrame.maxY - panelSize.height)
+    private func defaultControlPanelFrame(for overlay: Overlay, panelSize: CGSize) -> CGRect {
+        clampedControlPanelFrame(
+            origin: CGPoint(
+                x: overlay.display.visibleFrame.midX - panelSize.width / 2,
+                y: overlay.display.visibleFrame.minY + overlay.display.visibleFrame.height * 0.25
+            ),
+            size: panelSize,
+            visibleFrame: overlay.display.visibleFrame
+        )
+    }
+
+    private func clampedControlPanelFrame(
+        origin: CGPoint,
+        size panelSize: CGSize,
+        visibleFrame: CGRect
+    ) -> CGRect {
         let x = min(
-            max(globalRect.midX - panelSize.width / 2, screenFrame.minX),
-            screenFrame.maxX - panelSize.width
+            max(origin.x, visibleFrame.minX),
+            visibleFrame.maxX - panelSize.width
+        )
+        let y = min(
+            max(origin.y, visibleFrame.minY),
+            visibleFrame.maxY - panelSize.height
         )
         return CGRect(origin: CGPoint(x: x, y: y), size: panelSize)
     }
 
-    private func beginMovingSelection(displayID: CGDirectDisplayID) -> Bool {
+    private func beginMovingControlPanel(displayID: CGDirectDisplayID) -> Bool {
         guard ownerDisplayID == displayID,
-              let overlay = overlays[displayID],
-              let selectionRect = overlay.view.selectionRect,
               let controlPanel else { return false }
-        endMovingSelection()
-        selectionMoveStartRect = selectionRect
+        endMovingControlPanel()
         selectionMoveStartPanelFrame = controlPanel.frame
-        selectionMoveLatestRect = selectionRect
         return true
     }
 
-    private func moveSelection(displayID: CGDirectDisplayID, translation: CGPoint) {
+    private func moveControlPanel(displayID: CGDirectDisplayID, translation: CGPoint) {
         guard ownerDisplayID == displayID,
               let overlay = overlays[displayID],
-              let startRect = selectionMoveStartRect else { return }
-        let movedRect = SelectionGeometry.moved(
-            startRect,
-            translation: translation,
-            within: overlay.view.bounds
+              let controlPanel,
+              let startFrame = selectionMoveStartPanelFrame else { return }
+        let movedFrame = clampedControlPanelFrame(
+            origin: CGPoint(
+                x: startFrame.minX + translation.x,
+                y: startFrame.minY + translation.y
+            ),
+            size: startFrame.size,
+            visibleFrame: overlay.display.visibleFrame
         )
-        selectionMoveLatestRect = movedRect
-        overlay.view.selectionRect = movedRect
+        controlPanel.setFrame(movedFrame, display: false)
     }
 
-    private func endMovingSelection() {
-        if let ownerDisplayID,
-           let overlay = overlays[ownerDisplayID] {
-            if let selectionMoveLatestRect {
-                overlay.view.selectionRect = selectionMoveLatestRect
-                presentControls(for: selectionMoveLatestRect, overlay: overlay)
-            }
-        }
+    private func endMovingControlPanel() {
         selectionMovePreviewPanel?.close()
         selectionMovePreviewPanel = nil
         selectionMoveStartRect = nil

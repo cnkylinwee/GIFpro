@@ -12,10 +12,7 @@ struct GIFproApp: App {
 
     var body: some Scene {
         MenuBarExtra("GIFpro", systemImage: "record.circle") {
-            MenuBarContent(
-                coordinator: appDelegate.environment.coordinator,
-                showConsole: { appDelegate.showControlConsole() }
-            )
+            MenuBarContent(coordinator: appDelegate.environment.coordinator)
         }
     }
 }

@@ -56,7 +56,6 @@ extension RecordingCoordinator: RecordingCommandTitleProviding {}
 
 struct MenuBarContent: View {
     @ObservedObject var coordinator: RecordingCoordinator
-    let showConsole: () -> Void
 
     var body: some View {
         if let issue = MenuBarPresentation.issue(
@@ -71,20 +70,12 @@ struct MenuBarContent: View {
             Divider()
         }
 
-        Button("打开控制台") {
-            showConsole()
-        }
-
         Button("录制全屏画面") {
             Task { await coordinator.startRecording(mode: .fullScreen) }
         }
 
         Button("录制屏幕区域") {
             Task { await coordinator.startRecording(mode: .region) }
-        }
-
-        Button("偏好设置") {
-            GIFproPreferencesPanelController.shared.show()
         }
 
         Divider()
